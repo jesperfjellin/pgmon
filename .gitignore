@@ -1,0 +1,32 @@
+# Build artifacts
+/target
+debug/
+
+# Rust tooling
+**/*.rs.bk
+*.pdb
+*.profraw
+*.profdata
+
+# Editor and OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Environment & runtime overrides
+.env
+.env.*
+!.env.example
+
+# Frontend / tooling caches
+node_modules/
+dist/
+frontend/node_modules/
+frontend/dist/
+.vite/
+*.tsbuildinfo
+
+# AI
+AGENTS.md
+CLAUDE.md
