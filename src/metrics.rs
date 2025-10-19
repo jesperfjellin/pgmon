@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,6 +8,18 @@ use prometheus::{
     Encoder, GaugeVec, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry,
     TextEncoder,
 };
+
+const AUTOVACUUM_PHASES: &[&str] = &[
+    "initializing",
+    "scanning heap",
+    "vacuuming heap",
+    "vacuuming indexes",
+    "vacuuming TOAST table",
+    "cleaning up indexes",
+    "cleaning up TOAST table",
+    "truncating heap",
+    "performing final cleanup",
+];
 
 /// Metrics registry for the agent scraped by Prometheus.
 #[derive(Clone)]
@@ -19,6 +32,8 @@ pub struct AppMetrics {
     replication: ReplicationMetrics,
     storage: StorageMetrics,
     autovac: AutovacMetrics,
+    hot_path: HotPathMetrics,
+    index_usage: IndexMetrics,
     alert_counters: AlertCounters,
 }
 
@@ -33,6 +48,8 @@ impl AppMetrics {
         let replication = ReplicationMetrics::register(&registry)?;
         let storage = StorageMetrics::register(&registry)?;
         let autovac = AutovacMetrics::register(&registry)?;
+        let hot_path = HotPathMetrics::register(&registry)?;
+        let index_usage = IndexMetrics::register(&registry)?;
         let alert_counters = AlertCounters::register(&registry)?;
 
         Ok(Self {
@@ -44,6 +61,8 @@ impl AppMetrics {
             replication,
             storage,
             autovac,
+            hot_path,
+            index_usage,
             alert_counters,
         })
     }
@@ -231,6 +250,62 @@ impl AppMetrics {
         }
     }
 
+    pub fn set_autovacuum_jobs(&self, cluster: &str, jobs: &[(String, i64)]) {
+        let mut counts: HashMap<&str, i64> = HashMap::new();
+        for (phase, count) in jobs {
+            counts.insert(phase.as_str(), *count);
+        }
+
+        for phase in AUTOVACUUM_PHASES {
+            let value = *counts.get(phase).unwrap_or(&0);
+            let label = sanitize_label(phase);
+            self.hot_path
+                .autovac_jobs
+                .with_label_values(&[cluster, label.as_str()])
+                .set(value);
+        }
+
+        for (&phase, &value) in counts.iter() {
+            if !AUTOVACUUM_PHASES.iter().any(|known| *known == phase) {
+                let label = sanitize_label(phase);
+                self.hot_path
+                    .autovac_jobs
+                    .with_label_values(&[cluster, label.as_str()])
+                    .set(value);
+            }
+        }
+    }
+
+    pub fn set_temp_metrics(&self, cluster: &str, stats: &[(String, i64, i64)]) {
+        self.hot_path.temp_files.reset();
+        self.hot_path.temp_bytes.reset();
+
+        for (db, temp_files, temp_bytes) in stats {
+            let db_label = sanitize_label(db);
+            self.hot_path
+                .temp_files
+                .with_label_values(&[cluster, db_label.as_str()])
+                .set(*temp_files);
+            self.hot_path
+                .temp_bytes
+                .with_label_values(&[cluster, db_label.as_str()])
+                .set(*temp_bytes);
+        }
+    }
+
+    pub fn set_index_usage_metrics(&self, cluster: &str, stats: &[(String, String, i64)]) {
+        self.index_usage.scans_total.reset();
+
+        for (relation, index, scans) in stats {
+            let relation_label = sanitize_label(relation);
+            let index_label = sanitize_label(index);
+            self.index_usage
+                .scans_total
+                .with_label_values(&[cluster, relation_label.as_str(), index_label.as_str()])
+                .set(*scans);
+        }
+    }
+
     pub fn inc_alert(&self, cluster: &str, kind: AlertKind, severity: AlertSeverity) {
         let severity_label = severity.as_str();
         let kind_label = kind.as_str();
@@ -385,6 +460,50 @@ impl OverviewMetrics {
             blocked_sessions,
             longest_tx_seconds,
             longest_blocked_seconds,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct HotPathMetrics {
+    autovac_jobs: IntGaugeVec,
+    temp_files: IntGaugeVec,
+    temp_bytes: IntGaugeVec,
+}
+
+impl HotPathMetrics {
+    fn register(registry: &Registry) -> Result<Self> {
+        let autovac_jobs = IntGaugeVec::new(
+            Opts::new(
+                "pg_autovacuum_jobs",
+                "Number of autovacuum workers grouped by phase",
+            ),
+            &["cluster", "phase"],
+        )?;
+        registry.register(Box::new(autovac_jobs.clone()))?;
+
+        let temp_files = IntGaugeVec::new(
+            Opts::new(
+                "pg_temp_files_total",
+                "Total temp files created per database (pg_stat_database)",
+            ),
+            &["cluster", "db"],
+        )?;
+        registry.register(Box::new(temp_files.clone()))?;
+
+        let temp_bytes = IntGaugeVec::new(
+            Opts::new(
+                "pg_temp_bytes_total",
+                "Total temp bytes written per database (pg_stat_database)",
+            ),
+            &["cluster", "db"],
+        )?;
+        registry.register(Box::new(temp_bytes.clone()))?;
+
+        Ok(Self {
+            autovac_jobs,
+            temp_files,
+            temp_bytes,
         })
     }
 }
@@ -581,6 +700,26 @@ impl StorageMetrics {
 }
 
 #[derive(Clone)]
+struct IndexMetrics {
+    scans_total: IntGaugeVec,
+}
+
+impl IndexMetrics {
+    fn register(registry: &Registry) -> Result<Self> {
+        let scans_total = IntGaugeVec::new(
+            Opts::new(
+                "pg_index_scans_total",
+                "Total index scans observed (pg_stat_user_indexes)",
+            ),
+            &["cluster", "relation", "index"],
+        )?;
+        registry.register(Box::new(scans_total.clone()))?;
+
+        Ok(Self { scans_total })
+    }
+}
+
+#[derive(Clone)]
 struct AutovacMetrics {
     dead_tuples: IntGaugeVec,
     dead_ratio: GaugeVec,
@@ -744,7 +883,8 @@ mod tests {
             relkind: "r".into(),
             total_bytes: 1_048_576,
             table_bytes: 524_288,
-            index_toast_bytes: 524_288,
+            index_bytes: 262_144,
+            toast_bytes: 262_144,
             dead_tuple_ratio: Some(12.5),
             last_autovacuum: None,
             reltuples: Some(100.0),

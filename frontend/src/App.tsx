@@ -7,6 +7,7 @@ import {
   PartitionSlice,
   ReplicaLag,
   StorageEntry,
+  TopQueryEntry,
   WraparoundSnapshot,
   createPoller,
 } from "./api";
@@ -83,6 +84,118 @@ function warnClass(condition: boolean, crit = false) {
     return "status status--warn";
   }
   return "status status--ok";
+}
+
+const SQL_SNIPPETS = {
+  overview: `
+SELECT (SELECT COUNT(*) FROM pg_stat_activity) AS connections,
+       current_setting('max_connections')::bigint AS max_connections;
+
+SELECT COUNT(*) AS blocked_sessions,
+       MAX(EXTRACT(EPOCH FROM now() - act.query_start)) AS longest_blocked_seconds
+FROM pg_locks l
+JOIN pg_stat_activity act ON act.pid = l.pid
+WHERE NOT l.granted;
+
+SELECT MAX(EXTRACT(EPOCH FROM now() - xact_start)) AS longest_transaction_seconds
+FROM pg_stat_activity
+WHERE xact_start IS NOT NULL;
+`,
+  autovacuum: `
+SELECT
+    relid::regclass::text AS relation,
+    n_live_tup,
+    n_dead_tup,
+    last_vacuum,
+    last_autovacuum,
+    last_analyze,
+    last_autoanalyze
+FROM pg_stat_user_tables
+ORDER BY n_dead_tup DESC
+LIMIT $1;
+`,
+  topQueries: `
+SELECT
+    queryid,
+    calls,
+    total_exec_time,
+    mean_exec_time,
+    shared_blks_read
+FROM pg_stat_statements
+ORDER BY total_exec_time DESC
+LIMIT $1;
+`,
+  storage: `
+SELECT
+    c.oid::regclass::text AS relation,
+    c.relkind::text AS relkind,
+    pg_total_relation_size(c.oid) AS total_bytes,
+    pg_relation_size(c.oid) AS table_bytes,
+    pg_indexes_size(c.oid) AS index_bytes,
+    GREATEST(pg_total_relation_size(c.oid) - pg_relation_size(c.oid) - pg_indexes_size(c.oid), 0) AS toast_bytes,
+    NULLIF(s.n_live_tup + s.n_dead_tup, 0)::double precision AS tuple_denominator,
+    s.n_dead_tup AS dead_tuples,
+    s.last_autovacuum,
+    c.reltuples::double precision AS reltuples
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+  AND c.relkind IN ('r','m')
+ORDER BY pg_total_relation_size(c.oid) DESC
+LIMIT $1;
+`,
+  replication: `
+SELECT
+    application_name,
+    GREATEST(
+        COALESCE(EXTRACT(EPOCH FROM write_lag), 0),
+        COALESCE(EXTRACT(EPOCH FROM flush_lag), 0),
+        COALESCE(EXTRACT(EPOCH FROM replay_lag), 0)
+    ) AS lag_seconds,
+    pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn)::bigint AS lag_bytes
+FROM pg_stat_replication;
+`,
+  partitions: `
+SELECT
+    parent.relname AS parent_name,
+    parent.oid::regclass::text AS parent,
+    child.oid::regclass::text AS child,
+    pg_get_expr(child.relpartbound, child.oid) AS bounds
+FROM pg_inherits
+JOIN pg_class parent ON parent.oid = pg_inherits.inhparent
+JOIN pg_class child ON child.oid = pg_inherits.inhrelid
+JOIN pg_namespace pn ON pn.oid = parent.relnamespace
+JOIN pg_namespace cn ON cn.oid = child.relnamespace
+WHERE pn.nspname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY parent, child;
+`,
+  wraparound: `
+SELECT datname, age(datfrozenxid) AS tx_age
+FROM pg_database
+ORDER BY tx_age DESC
+LIMIT 10;
+
+SELECT c.oid::regclass::text AS relation, age(c.relfrozenxid) AS tx_age
+FROM pg_class c
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+  AND c.relkind IN ('r','m')
+ORDER BY age(c.relfrozenxid) DESC
+LIMIT $1;
+`,
+} as const;
+
+function SqlSnippet({ sql }: { sql: string }) {
+  const normalized = sql.trim();
+  return (
+    <details className="sql-snippet">
+      <summary>SQL</summary>
+      <pre>
+        <code>{normalized}</code>
+      </pre>
+    </details>
+  );
 }
 
 function usePollingData<T>(path: string, initial: T, intervalMs?: number) {
@@ -228,6 +341,7 @@ function OverviewPanel({
       <p className="muted">
         Updated {formatRelativeTimestamp(overview.generated_at)}
       </p>
+      <SqlSnippet sql={SQL_SNIPPETS.overview} />
     </div>
   );
 }
@@ -258,6 +372,49 @@ function MetricCard({
           </span>
         )}
       </div>
+    </div>
+  );
+}
+
+function TopQueriesPanel({ queries }: { queries: TopQueryEntry[] }) {
+  const topQueries = useMemo(() => queries.slice(0, 10), [queries]);
+
+  return (
+    <div className="panel wide">
+      <h2>Top Queries</h2>
+      {topQueries.length === 0 ? (
+        <p className="muted">No query activity recorded yet.</p>
+      ) : (
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Query ID</th>
+                <th className="numeric">Calls</th>
+                <th className="numeric">Total Time (s)</th>
+                <th className="numeric">Mean Time (ms)</th>
+                <th className="numeric">Shared Blks Read</th>
+              </tr>
+            </thead>
+            <tbody>
+              {topQueries.map((row) => (
+                <tr key={row.queryid}>
+                  <td>{row.queryid}</td>
+                  <td className="numeric">{numberFormatter.format(row.calls)}</td>
+                  <td className="numeric">
+                    {row.total_time_seconds.toFixed(2)}
+                  </td>
+                  <td className="numeric">{row.mean_time_ms.toFixed(2)}</td>
+                  <td className="numeric">
+                    {numberFormatter.format(row.shared_blks_read)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <SqlSnippet sql={SQL_SNIPPETS.topQueries} />
     </div>
   );
 }
@@ -307,6 +464,7 @@ function AutovacuumPanel({ tables }: { tables: AutovacuumEntry[] }) {
           </table>
         </div>
       )}
+      <SqlSnippet sql={SQL_SNIPPETS.autovacuum} />
     </div>
   );
 }
@@ -350,6 +508,8 @@ function StoragePanel({ rows }: { rows: StorageEntry[] }) {
           </table>
         </div>
       )}
+      <SqlSnippet sql={SQL_SNIPPETS.storage} />
+      <SqlSnippet sql={SQL_SNIPPETS.partitions} />
     </div>
   );
 }
@@ -372,6 +532,7 @@ function ReplicationPanel({ replicas }: { replicas: ReplicaLag[] }) {
           ))}
         </ul>
       )}
+      <SqlSnippet sql={SQL_SNIPPETS.replication} />
     </div>
   );
 }
@@ -469,6 +630,7 @@ function WraparoundPanel({ snapshot }: { snapshot: WraparoundSnapshot }) {
           </ul>
         </div>
       </div>
+      <SqlSnippet sql={SQL_SNIPPETS.wraparound} />
     </div>
   );
 }
@@ -480,6 +642,11 @@ function App() {
   } = usePollingData<OverviewSnapshot | null>(api.overview, null, 15_000);
   const { data: autovacuum } = usePollingData<AutovacuumEntry[]>(
     api.autovacuum,
+    [],
+    60_000,
+  );
+  const { data: topQueries } = usePollingData<TopQueryEntry[]>(
+    api.topQueries,
     [],
     60_000,
   );
@@ -527,6 +694,7 @@ function App() {
         <ReplicationPanel replicas={replication} />
         <WraparoundPanel snapshot={wraparound} />
         <AutovacuumPanel tables={autovacuum} />
+        <TopQueriesPanel queries={topQueries} />
         <StoragePanel rows={storage} />
         <PartitionPanel slices={partitions} />
       </main>

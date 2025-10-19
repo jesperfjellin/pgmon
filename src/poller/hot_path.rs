@@ -53,6 +53,45 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
     let longest_tx = to_optional_positive(longest_transaction_seconds);
     let longest_blocked = to_optional_positive(longest_blocked_seconds);
 
+    let autovac_rows = sqlx::query(
+        r#"
+        SELECT COALESCE(phase, 'unknown') AS phase, COUNT(*)::bigint AS jobs
+        FROM pg_stat_progress_vacuum
+        GROUP BY phase
+        "#,
+    )
+    .fetch_all(&ctx.pool)
+    .await?;
+
+    let mut autovac_jobs = Vec::with_capacity(autovac_rows.len());
+    for row in autovac_rows {
+        let phase: String = row.try_get("phase")?;
+        let jobs: i64 = row.try_get("jobs")?;
+        autovac_jobs.push((phase, jobs));
+    }
+    ctx.metrics
+        .set_autovacuum_jobs(ctx.cluster_name(), &autovac_jobs);
+
+    let temp_rows = sqlx::query(
+        r#"
+        SELECT datname, temp_files::bigint AS temp_files, temp_bytes::bigint AS temp_bytes
+        FROM pg_stat_database
+        WHERE datname NOT IN ('template0', 'template1')
+        "#,
+    )
+    .fetch_all(&ctx.pool)
+    .await?;
+
+    let mut temp_stats = Vec::with_capacity(temp_rows.len());
+    for row in temp_rows {
+        let db: String = row.try_get("datname")?;
+        let temp_files: i64 = row.try_get("temp_files")?;
+        let temp_bytes: i64 = row.try_get("temp_bytes")?;
+        temp_stats.push((db, temp_files, temp_bytes));
+    }
+    ctx.metrics
+        .set_temp_metrics(ctx.cluster_name(), &temp_stats);
+
     let mut open_alerts = Vec::new();
     let mut open_crit_alerts = Vec::new();
     let alerts_cfg = &ctx.config.alerts;

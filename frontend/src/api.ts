@@ -39,6 +39,14 @@ export interface StorageEntry {
   dead_tuples?: number;
 }
 
+export interface TopQueryEntry {
+  queryid: number;
+  calls: number;
+  total_time_seconds: number;
+  mean_time_ms: number;
+  shared_blks_read: number;
+}
+
 export interface ReplicaLag {
   replica: string;
   lag_seconds?: number;
@@ -123,6 +131,7 @@ export function createPoller<T>(
 export const api = {
   overview: "/api/v1/overview",
   autovacuum: "/api/v1/autovacuum",
+  topQueries: "/api/v1/top-queries",
   replication: "/api/v1/replication",
   storage: "/api/v1/storage",
   partitions: "/api/v1/partitions",

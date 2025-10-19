@@ -26,6 +26,22 @@ ORDER BY pg_total_relation_size(c.oid) DESC
 LIMIT $1
 "#;
 
+const INDEX_USAGE_SQL: &str = r#"
+SELECT
+    rel.oid::regclass::text AS relation,
+    idx.oid::regclass::text AS index,
+    COALESCE(s.idx_scan, 0)::bigint AS idx_scan
+FROM pg_class idx
+JOIN pg_index i ON i.indexrelid = idx.oid
+JOIN pg_class rel ON rel.oid = i.indrelid
+JOIN pg_namespace n ON n.oid = rel.relnamespace
+LEFT JOIN pg_stat_user_indexes s ON s.indexrelid = idx.oid
+WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+  AND idx.relkind = 'i'
+ORDER BY pg_relation_size(idx.oid) DESC
+LIMIT $1
+"#;
+
 #[instrument(skip_all)]
 pub async fn run(ctx: &AppContext) -> Result<()> {
     let limit = ctx.config.limits.top_relations as i64;
@@ -71,6 +87,24 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
 
     ctx.metrics
         .set_storage_metrics(ctx.cluster_name(), &entries);
+
+    let index_limit = ctx.config.limits.top_indexes as i64;
+    let index_rows = sqlx::query(INDEX_USAGE_SQL)
+        .bind(index_limit)
+        .fetch_all(&ctx.pool)
+        .await?;
+
+    let mut index_stats = Vec::with_capacity(index_rows.len());
+    for row in index_rows {
+        let relation: String = row.try_get("relation")?;
+        let index: String = row.try_get("index")?;
+        let idx_scan: i64 = row.try_get("idx_scan")?;
+        index_stats.push((relation, index, idx_scan));
+    }
+
+    ctx.metrics
+        .set_index_usage_metrics(ctx.cluster_name(), &index_stats);
+
     ctx.state.update_storage(entries).await;
     Ok(())
 }

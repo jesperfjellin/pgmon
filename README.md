@@ -12,7 +12,7 @@
 * **Zero-write** monitoring (uses `pg_monitor` only).
 * Lightweight **poller loops** (15s / 60s / 10m / hourly) with strict time budgets.
 * **Top queries**, **locks**, **autovacuum health**, **WAL/checkpoints**, **replication lag**, **bloat signals**, **wraparound safety**, **partition sanity**.
-* **Prometheus exporter** + tiny **web UI** + optional **Slack/Email** notifiers.
+* **Prometheus exporter** + tiny **web UI**. (Alert notifiers such as Slack/Email are planned for a later release once core surfaces stabilize.)
 * Clear **SQL transparency**: every UI panel links to its SQL.
 
 **Non-Goals (v1):**
@@ -114,7 +114,7 @@ All metrics include `{cluster,db}` unless noted.
 * **WAL / checkpoints:**
   `pg_wal_bytes_written_total`, `pg_checkpoints_timed_total`, `pg_checkpoints_requested_total`
 * **Temp:**
-  `pg_temp_bytes_total{db}`
+  `pg_temp_bytes_total{db}`, `pg_temp_files_total{db}`
 * **Replication:**
   `pg_replication_lag_seconds{replica}`, `pg_replication_lag_bytes{replica}`
 * **Wraparound:**
@@ -154,7 +154,7 @@ Each alert has: **expr**, **for**, **severity**, **message**, **dedupe key**.
 * **Wraparound danger**: `age(datfrozenxid) > 1.5e9` (warn) / `> 1.8e9` (crit)
 * **Unused indexes**: `idx_scan = 0` for 7d **and** size > 100MB
 
-> **Notifier:** Slack webhook / Email; compact payload + deep-link to UI panel.
+> **Future notifier work:** Webhook/email delivery will come after the core telemetry set is stable; today alerts surface in the UI and Prometheus metrics only.
 
 ---
 
