@@ -66,24 +66,25 @@
 
 **60 s loop (<3 s):**
 
-* TPS/QPS & latency: deltas from `pg_stat_database` + `pg_stat_statements`
+* TPS/QPS & latency: deltas from `pg_stat_database` + `pg_stat_statements` (`pg_stat_monitor` adds p95 when present)
 * Top statements by `total_time`, `calls`, `shared_blks_read` (via `queryid`)
-* WAL/checkpoints: `pg_stat_bgwriter`, `pg_stat_wal` (PG14+)
+* WAL/checkpoints: `pg_stat_bgwriter`, `pg_stat_wal` (PG14+), requested ratio + mean interval
 * Replication lag (time/bytes)
-* Vacuum/Analyze freshness (table-level)
+* Vacuum/Analyze freshness (table-level) + autovac starvation heuristics
+* WAL/temp surge detection (bytes/sec thresholds)
 
 **5–10 min loop (<10 s):**
 
 * Relation sizes (Top-N tables/indexes)
 * Dead vs live tuples; `%dead` per table
-* Index usage; track 0-scan indexes
-* Partition/retention sanity (IoT focus)
+* Index usage; track 0-scan indexes + unused index footprint
+* Partition horizon sanity (future coverage & gaps)
 
 **Hourly loop (<60 s):**
 
 * Lightweight bloat estimate (size vs tuples; sample `pgstattuple` on Top-N) *(planned)*
-* Wraparound safety (`age(datfrozenxid)`, worst `relfrozenxid`)
-* Stale stats (time since last analyze) *(planned)*
+* Wraparound safety (`age(datfrozenxid)`, worst `relfrozenxid`) with warn/crit alerts
+* Stale stats (time since last analyze)
 
 ---
 
@@ -111,7 +112,7 @@ All metrics include `{cluster,db}` unless noted.
 * **Stats freshness:**
   `pg_table_stats_stale_seconds{relation}`
 * **Storage:**
-  `pg_relation_size_bytes{relation,relkind}`, `pg_relation_table_bytes{relation,relkind}`, `pg_relation_index_bytes{relation,relkind}`, `pg_relation_toast_bytes{relation,relkind}`
+  `pg_relation_size_bytes{relation,relkind}`, `pg_relation_table_bytes{relation,relkind}`, `pg_relation_index_bytes{relation,relkind}`, `pg_relation_toast_bytes{relation,relkind}`, `pg_relation_bloat_estimated_bytes{relation,relkind}`
 * **Index usage:**
   `pg_index_scans_total{index}`, `pg_unused_index_bytes{index}`
 * **WAL / checkpoints:**
