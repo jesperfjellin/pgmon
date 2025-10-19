@@ -31,9 +31,13 @@ pub struct AppMetrics {
     wraparound: WraparoundMetrics,
     replication: ReplicationMetrics,
     storage: StorageMetrics,
+    unused_indexes: UnusedIndexMetrics,
     autovac: AutovacMetrics,
     hot_path: HotPathMetrics,
     index_usage: IndexMetrics,
+    stale_stats: StaleStatsMetrics,
+    statements: StatementMetrics,
+    partition: PartitionMetrics,
     alert_counters: AlertCounters,
 }
 
@@ -47,9 +51,13 @@ impl AppMetrics {
         let wraparound = WraparoundMetrics::register(&registry)?;
         let replication = ReplicationMetrics::register(&registry)?;
         let storage = StorageMetrics::register(&registry)?;
+        let unused_indexes = UnusedIndexMetrics::register(&registry)?;
         let autovac = AutovacMetrics::register(&registry)?;
         let hot_path = HotPathMetrics::register(&registry)?;
         let index_usage = IndexMetrics::register(&registry)?;
+        let stale_stats = StaleStatsMetrics::register(&registry)?;
+        let statements = StatementMetrics::register(&registry)?;
+        let partition = PartitionMetrics::register(&registry)?;
         let alert_counters = AlertCounters::register(&registry)?;
 
         Ok(Self {
@@ -60,9 +68,13 @@ impl AppMetrics {
             wraparound,
             replication,
             storage,
+            unused_indexes,
             autovac,
             hot_path,
             index_usage,
+            stale_stats,
+            statements,
+            partition,
             alert_counters,
         })
     }
@@ -138,6 +150,10 @@ impl AppMetrics {
         wal_bytes_per_second: Option<f64>,
         checkpoints_timed_total: Option<i64>,
         checkpoints_requested_total: Option<i64>,
+        checkpoint_requested_ratio: Option<f64>,
+        checkpoint_mean_interval_seconds: Option<f64>,
+        temp_bytes_per_second: Option<f64>,
+        latency_p95_ms: Option<f64>,
     ) {
         set_optional_gauge(&self.workload.tps, cluster, tps);
         set_optional_gauge(&self.workload.qps, cluster, qps);
@@ -146,6 +162,12 @@ impl AppMetrics {
             &self.workload.mean_latency_seconds,
             cluster,
             mean_latency_seconds,
+        );
+        let latency_p95_seconds = latency_p95_ms.map(|ms| ms / 1_000.0);
+        set_optional_gauge(
+            &self.workload.latency_seconds_p95,
+            cluster,
+            latency_p95_seconds,
         );
         set_optional_int_gauge(&self.workload.wal_bytes_total, cluster, wal_bytes_total);
         set_optional_gauge(
@@ -162,6 +184,21 @@ impl AppMetrics {
             &self.workload.checkpoints_requested_total,
             cluster,
             checkpoints_requested_total,
+        );
+        set_optional_gauge(
+            &self.workload.checkpoint_requested_ratio,
+            cluster,
+            checkpoint_requested_ratio,
+        );
+        set_optional_gauge(
+            &self.workload.checkpoint_mean_interval_seconds,
+            cluster,
+            checkpoint_mean_interval_seconds,
+        );
+        set_optional_gauge(
+            &self.workload.temp_bytes_per_second,
+            cluster,
+            temp_bytes_per_second,
         );
     }
 
@@ -193,6 +230,80 @@ impl AppMetrics {
                 .relation_toast_bytes
                 .with_label_values(&[cluster, relation.as_str(), relkind])
                 .set(entry.toast_bytes);
+        }
+    }
+
+    pub fn set_unused_index_metrics(
+        &self,
+        cluster: &str,
+        entries: &[crate::state::UnusedIndexEntry],
+    ) {
+        self.unused_indexes.bytes.reset();
+
+        for entry in entries {
+            let relation = sanitize_label(&entry.relation);
+            let index = sanitize_label(&entry.index);
+            self.unused_indexes
+                .bytes
+                .with_label_values(&[cluster, relation.as_str(), index.as_str()])
+                .set(entry.bytes);
+        }
+    }
+
+    pub fn set_statement_metrics(&self, cluster: &str, entries: &[crate::state::TopQueryEntry]) {
+        self.statements.calls.reset();
+        self.statements.total_time_seconds.reset();
+        self.statements.shared_reads.reset();
+
+        for entry in entries {
+            let queryid = entry.queryid.to_string();
+            let labels = [cluster, queryid.as_str()];
+            self.statements
+                .calls
+                .with_label_values(&labels)
+                .set(entry.calls);
+            self.statements
+                .total_time_seconds
+                .with_label_values(&labels)
+                .set(entry.total_time_seconds);
+            self.statements
+                .shared_reads
+                .with_label_values(&labels)
+                .set(entry.shared_blks_read);
+        }
+    }
+
+    pub fn set_stale_stats_metrics(&self, cluster: &str, entries: &[crate::state::StaleStatEntry]) {
+        self.stale_stats.last_analyze_age.reset();
+
+        for entry in entries {
+            if let Some(hours) = entry.hours_since_analyze {
+                let relation = sanitize_label(&entry.relation);
+                self.stale_stats
+                    .last_analyze_age
+                    .with_label_values(&[cluster, relation.as_str()])
+                    .set(hours * 3600.0);
+            }
+        }
+    }
+
+    pub fn set_partition_metrics(&self, cluster: &str, entries: &[crate::state::PartitionSlice]) {
+        self.partition.missing_future.reset();
+        self.partition.future_gap_seconds.reset();
+
+        for entry in entries {
+            let parent = sanitize_label(&entry.parent);
+            let labels = [cluster, parent.as_str()];
+            let gap_seconds = entry.future_gap_seconds.unwrap_or(0) as f64;
+
+            self.partition
+                .missing_future
+                .with_label_values(&labels)
+                .set(if entry.missing_future_partition { 1 } else { 0 });
+            self.partition
+                .future_gap_seconds
+                .with_label_values(&labels)
+                .set(gap_seconds);
         }
     }
 
@@ -513,10 +624,14 @@ struct WorkloadMetrics {
     tps: GaugeVec,
     qps: GaugeVec,
     mean_latency_seconds: GaugeVec,
+    latency_seconds_p95: GaugeVec,
     wal_bytes_total: IntGaugeVec,
     wal_bytes_per_second: GaugeVec,
     checkpoints_timed_total: IntGaugeVec,
     checkpoints_requested_total: IntGaugeVec,
+    checkpoint_requested_ratio: GaugeVec,
+    checkpoint_mean_interval_seconds: GaugeVec,
+    temp_bytes_per_second: GaugeVec,
 }
 
 impl WorkloadMetrics {
@@ -535,6 +650,15 @@ impl WorkloadMetrics {
             &["cluster"],
         )?;
         registry.register(Box::new(mean_latency_seconds.clone()))?;
+
+        let latency_seconds_p95 = GaugeVec::new(
+            Opts::new(
+                "pg_query_latency_seconds_p95",
+                "95th percentile query latency derived from pg_stat_monitor when available",
+            ),
+            &["cluster"],
+        )?;
+        registry.register(Box::new(latency_seconds_p95.clone()))?;
 
         let wal_bytes_total = IntGaugeVec::new(
             Opts::new("pg_wal_bytes_written_total", "Total WAL bytes written"),
@@ -566,14 +690,45 @@ impl WorkloadMetrics {
         )?;
         registry.register(Box::new(checkpoints_requested_total.clone()))?;
 
+        let checkpoint_requested_ratio = GaugeVec::new(
+            Opts::new(
+                "pg_checkpoints_requested_ratio",
+                "Ratio of requested checkpoints over total in the last sample",
+            ),
+            &["cluster"],
+        )?;
+        registry.register(Box::new(checkpoint_requested_ratio.clone()))?;
+
+        let checkpoint_mean_interval_seconds = GaugeVec::new(
+            Opts::new(
+                "pg_checkpoints_mean_interval_seconds",
+                "Mean interval between checkpoints over the last sample",
+            ),
+            &["cluster"],
+        )?;
+        registry.register(Box::new(checkpoint_mean_interval_seconds.clone()))?;
+
+        let temp_bytes_per_second = GaugeVec::new(
+            Opts::new(
+                "pg_temp_bytes_written_per_second",
+                "Temp bytes per second derived from pg_stat_database",
+            ),
+            &["cluster"],
+        )?;
+        registry.register(Box::new(temp_bytes_per_second.clone()))?;
+
         Ok(Self {
             tps,
             qps,
             mean_latency_seconds,
+            latency_seconds_p95,
             wal_bytes_total,
             wal_bytes_per_second,
             checkpoints_timed_total,
             checkpoints_requested_total,
+            checkpoint_requested_ratio,
+            checkpoint_mean_interval_seconds,
+            temp_bytes_per_second,
         })
     }
 }
@@ -720,6 +875,123 @@ impl IndexMetrics {
 }
 
 #[derive(Clone)]
+struct StaleStatsMetrics {
+    last_analyze_age: GaugeVec,
+}
+
+impl StaleStatsMetrics {
+    fn register(registry: &Registry) -> Result<Self> {
+        let last_analyze_age = GaugeVec::new(
+            Opts::new(
+                "pg_table_stats_stale_seconds",
+                "Seconds since statistics were last refreshed for a table",
+            ),
+            &["cluster", "relation"],
+        )?;
+        registry.register(Box::new(last_analyze_age.clone()))?;
+
+        Ok(Self { last_analyze_age })
+    }
+}
+
+#[derive(Clone)]
+struct UnusedIndexMetrics {
+    bytes: IntGaugeVec,
+}
+
+impl UnusedIndexMetrics {
+    fn register(registry: &Registry) -> Result<Self> {
+        let bytes = IntGaugeVec::new(
+            Opts::new(
+                "pg_unused_index_bytes",
+                "Footprint of indexes with zero scans since statistics reset",
+            ),
+            &["cluster", "relation", "index"],
+        )?;
+        registry.register(Box::new(bytes.clone()))?;
+
+        Ok(Self { bytes })
+    }
+}
+
+#[derive(Clone)]
+struct StatementMetrics {
+    calls: IntGaugeVec,
+    total_time_seconds: GaugeVec,
+    shared_reads: IntGaugeVec,
+}
+
+impl StatementMetrics {
+    fn register(registry: &Registry) -> Result<Self> {
+        let calls = IntGaugeVec::new(
+            Opts::new(
+                "pg_stmt_calls_total",
+                "Total calls recorded for the queryid (Top-N subset)",
+            ),
+            &["cluster", "queryid"],
+        )?;
+        registry.register(Box::new(calls.clone()))?;
+
+        let total_time_seconds = GaugeVec::new(
+            Opts::new(
+                "pg_stmt_time_seconds_total",
+                "Total execution time in seconds recorded for the queryid (Top-N subset)",
+            ),
+            &["cluster", "queryid"],
+        )?;
+        registry.register(Box::new(total_time_seconds.clone()))?;
+
+        let shared_reads = IntGaugeVec::new(
+            Opts::new(
+                "pg_stmt_shared_blks_read_total",
+                "Total shared blocks read for the queryid (Top-N subset)",
+            ),
+            &["cluster", "queryid"],
+        )?;
+        registry.register(Box::new(shared_reads.clone()))?;
+
+        Ok(Self {
+            calls,
+            total_time_seconds,
+            shared_reads,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct PartitionMetrics {
+    missing_future: IntGaugeVec,
+    future_gap_seconds: GaugeVec,
+}
+
+impl PartitionMetrics {
+    fn register(registry: &Registry) -> Result<Self> {
+        let missing_future = IntGaugeVec::new(
+            Opts::new(
+                "pg_partition_missing_future",
+                "Flag indicating whether a partitioned table lacks coverage beyond the configured horizon",
+            ),
+            &["cluster", "parent"],
+        )?;
+        registry.register(Box::new(missing_future.clone()))?;
+
+        let future_gap_seconds = GaugeVec::new(
+            Opts::new(
+                "pg_partition_future_gap_seconds",
+                "Seconds between the current horizon cut-off and the latest available partition upper bound",
+            ),
+            &["cluster", "parent"],
+        )?;
+        registry.register(Box::new(future_gap_seconds.clone()))?;
+
+        Ok(Self {
+            missing_future,
+            future_gap_seconds,
+        })
+    }
+}
+
+#[derive(Clone)]
 struct AutovacMetrics {
     dead_tuples: IntGaugeVec,
     dead_ratio: GaugeVec,
@@ -855,6 +1127,13 @@ pub enum AlertKind {
     BlockedSession,
     ReplicationLag,
     DeadTuples,
+    PartitionGap,
+    Wraparound,
+    WalSurge,
+    TempSurge,
+    AutovacuumStarvation,
+    CheckpointThrash,
+    StaleStats,
 }
 
 impl AlertKind {
@@ -865,6 +1144,13 @@ impl AlertKind {
             AlertKind::BlockedSession => "blocked_session",
             AlertKind::ReplicationLag => "replication_lag",
             AlertKind::DeadTuples => "dead_tuples",
+            AlertKind::PartitionGap => "partition_gap",
+            AlertKind::Wraparound => "wraparound",
+            AlertKind::WalSurge => "wal_surge",
+            AlertKind::TempSurge => "temp_surge",
+            AlertKind::AutovacuumStarvation => "autovacuum_starvation",
+            AlertKind::CheckpointThrash => "checkpoint_thrash",
+            AlertKind::StaleStats => "stale_stats",
         }
     }
 }
@@ -872,7 +1158,10 @@ impl AlertKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{AutovacuumEntry, StorageEntry};
+    use crate::state::{
+        AutovacuumEntry, PartitionSlice, StaleStatEntry, StorageEntry, TopQueryEntry,
+        UnusedIndexEntry,
+    };
     use chrono::Utc;
 
     #[test]
@@ -899,6 +1188,112 @@ mod tests {
                 && (line.contains("1.048576e+06") || line.trim_end().ends_with("1048576"))
         });
         assert!(size_line.is_some(), "relation size missing: {output}");
+    }
+
+    #[test]
+    fn stale_stats_metrics_record_entries() {
+        let metrics = AppMetrics::new().expect("metrics");
+        let entry = StaleStatEntry {
+            relation: "public.foo".into(),
+            last_analyze: None,
+            last_autoanalyze: None,
+            hours_since_analyze: Some(36.0),
+            n_live_tup: 1_000,
+        };
+
+        metrics.set_stale_stats_metrics("cluster", &[entry]);
+        let output = metrics.encode().expect("encode");
+        assert!(output.contains("pgmon_pg_table_stats_stale_seconds"));
+    }
+
+    #[test]
+    fn statement_metrics_export_top_queries() {
+        let metrics = AppMetrics::new().expect("metrics");
+        let entry = TopQueryEntry {
+            queryid: 123,
+            calls: 42,
+            total_time_seconds: 12.5,
+            mean_time_ms: 297.0,
+            shared_blks_read: 900,
+        };
+
+        metrics.set_statement_metrics("cluster", &[entry]);
+        let output = metrics.encode().expect("encode");
+        assert!(
+            output.contains("pgmon_pg_stmt_calls_total{cluster=\"cluster\",queryid=\"123\"} 42"),
+            "statement calls missing: {output}"
+        );
+        assert!(
+            output.contains(
+                "pgmon_pg_stmt_time_seconds_total{cluster=\"cluster\",queryid=\"123\"} 12.5"
+            ),
+            "statement time missing: {output}"
+        );
+        assert!(
+            output.contains(
+                "pgmon_pg_stmt_shared_blks_read_total{cluster=\"cluster\",queryid=\"123\"} 900"
+            ),
+            "statement shared reads missing: {output}"
+        );
+    }
+
+    #[test]
+    fn partition_metrics_emit_gap_flags() {
+        let metrics = AppMetrics::new().expect("metrics");
+        let now = Utc::now();
+        let slice = PartitionSlice {
+            parent: "public.orders".into(),
+            child_count: 4,
+            oldest_partition: None,
+            newest_partition: Some(now - chrono::Duration::days(1)),
+            latest_partition_upper: Some(now - chrono::Duration::hours(2)),
+            latest_partition_name: Some("orders_202403".into()),
+            next_expected_partition: Some(now + chrono::Duration::days(5)),
+            missing_future_partition: true,
+            future_gap_seconds: Some(7_200),
+        };
+
+        metrics.set_partition_metrics("cluster", &[slice]);
+        let output = metrics.encode().expect("encode");
+        assert!(
+            output.contains(
+                "pgmon_pg_partition_missing_future{cluster=\"cluster\",parent=\"public_orders\"} 1"
+            ),
+            "missing future flag absent: {output}"
+        );
+        assert!(
+            output.contains(
+                "pgmon_pg_partition_future_gap_seconds{cluster=\"cluster\",parent=\"public_orders\"} 7200"
+            ),
+            "gap seconds absent: {output}"
+        );
+    }
+
+    #[test]
+    fn unused_index_metrics_capture_bytes() {
+        let metrics = AppMetrics::new().expect("metrics");
+        let entry = UnusedIndexEntry {
+            relation: "public.accounts".into(),
+            index: "accounts_idx".into(),
+            bytes: 200_000_000,
+        };
+
+        metrics.set_unused_index_metrics("cluster", &[entry]);
+        let output = metrics.encode().expect("encode");
+        assert!(
+            output.contains("pgmon_pg_unused_index_bytes"),
+            "metric absent: {output}"
+        );
+        assert!(
+            output.contains("cluster=\"cluster\"")
+                && output.contains("relation=\"public_accounts\"")
+                && output.contains("index=\"accounts_idx\""),
+            "labels missing: {output}"
+        );
+        assert!(
+            output.contains(" 2e+08") || output.contains(" 200000000"),
+            "value missing: {output}"
+        );
     }
 
     #[test]
