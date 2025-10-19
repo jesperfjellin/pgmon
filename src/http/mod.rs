@@ -25,6 +25,8 @@ pub fn create_router(ctx: AppContext) -> Router {
         .route("/autovacuum", get(get_autovacuum))
         .route("/top-queries", get(get_top_queries))
         .route("/storage", get(get_storage))
+        .route("/unused-indexes", get(get_unused_indexes))
+        .route("/stale-stats", get(get_stale_stats))
         .route("/partitions", get(get_partitions))
         .route("/replication", get(get_replication))
         .route("/wraparound", get(get_wraparound));
@@ -84,6 +86,18 @@ async fn get_top_queries(State(ctx): State<AppContext>) -> Json<Vec<crate::state
 async fn get_storage(State(ctx): State<AppContext>) -> Json<Vec<crate::state::StorageEntry>> {
     let snapshots = ctx.state.get_snapshots().await;
     Json(snapshots.storage)
+}
+
+async fn get_unused_indexes(
+    State(ctx): State<AppContext>,
+) -> Json<Vec<crate::state::UnusedIndexEntry>> {
+    let snapshots = ctx.state.get_snapshots().await;
+    Json(snapshots.unused_indexes)
+}
+
+async fn get_stale_stats(State(ctx): State<AppContext>) -> Json<Vec<crate::state::StaleStatEntry>> {
+    let snapshots = ctx.state.get_snapshots().await;
+    Json(snapshots.stale_stats)
 }
 
 async fn get_partitions(State(ctx): State<AppContext>) -> Json<Vec<crate::state::PartitionSlice>> {
