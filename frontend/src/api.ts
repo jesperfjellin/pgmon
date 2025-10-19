@@ -41,6 +41,7 @@ export interface StorageEntry {
   last_autovacuum?: number;
   reltuples?: number;
   dead_tuples?: number;
+  estimated_bloat_bytes?: number | null;
 }
 
 export interface UnusedIndexEntry {
