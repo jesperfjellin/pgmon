@@ -35,6 +35,20 @@ alerts:
   long_txn_crit_s: 1800
   repl_warn_s: 30
   repl_crit_s: 300
+  stats_stale_warn_hours: 12
+  stats_stale_crit_hours: 24
+  wraparound_warn_tx_age: 1500000000
+  wraparound_crit_tx_age: 1800000000
+  wal_surge_warn_bytes_per_sec: 104857600      # 100 MiB/s
+  wal_surge_crit_bytes_per_sec: 209715200      # 200 MiB/s
+  temp_surge_warn_bytes_per_sec: 52428800      # 50 MiB/s
+  temp_surge_crit_bytes_per_sec: 104857600     # 100 MiB/s
+  autovac_starvation_warn_hours: 6
+  autovac_starvation_crit_hours: 12
+  checkpoint_ratio_warn: 0.2
+  checkpoint_ratio_crit: 0.5
+  checkpoint_interval_warn_seconds: 300
+  checkpoint_interval_crit_seconds: 180
 
 notifiers:
   # Optional: Slack webhook URL for alert notifications.
