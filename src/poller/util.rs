@@ -15,3 +15,11 @@ pub fn is_missing_relation(error: &dyn DatabaseError) -> bool {
 pub fn to_optional_positive(value: Option<f64>) -> Option<f64> {
     value.and_then(|v| if v > 0.0 { Some(v) } else { None })
 }
+
+pub fn is_missing_column(error: &dyn DatabaseError) -> bool {
+    if let Some(code) = error.code() {
+        code == "42703"
+    } else {
+        false
+    }
+}
