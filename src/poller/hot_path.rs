@@ -1,11 +1,62 @@
 use anyhow::Result;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sqlx::Row;
 use tracing::instrument;
 
 use crate::app::AppContext;
+use std::cmp::Ordering;
+
 use crate::metrics::{AlertKind, AlertSeverity};
 use crate::poller::util::to_optional_positive;
+use crate::state::BlockingEvent;
+
+const BLOCKING_EVENTS_SQL: &str = r#"
+WITH blocking AS (
+    SELECT
+        bl.pid AS blocked_pid,
+        kl.pid AS blocker_pid,
+        ka.usename AS blocked_usename,
+        ka.xact_start AS blocked_xact_start,
+        CASE
+            WHEN ka.query_start IS NOT NULL THEN EXTRACT(EPOCH FROM now() - ka.query_start)
+            ELSE NULL
+        END AS blocked_wait_seconds,
+        ka.query AS blocked_query,
+        aa.usename AS blocker_usename,
+        aa.state AS blocker_state,
+        (aa.wait_event IS NOT NULL) AS blocker_waiting,
+        aa.query AS blocker_query
+    FROM pg_locks bl
+    JOIN pg_stat_activity ka ON ka.pid = bl.pid
+    JOIN pg_locks kl ON bl.locktype = kl.locktype
+        AND bl.database IS NOT DISTINCT FROM kl.database
+        AND bl.relation IS NOT DISTINCT FROM kl.relation
+        AND bl.page IS NOT DISTINCT FROM kl.page
+        AND bl.tuple IS NOT DISTINCT FROM kl.tuple
+        AND bl.virtualxid IS NOT DISTINCT FROM kl.virtualxid
+        AND bl.transactionid IS NOT DISTINCT FROM kl.transactionid
+        AND bl.classid IS NOT DISTINCT FROM kl.classid
+        AND bl.objid IS NOT DISTINCT FROM kl.objid
+        AND bl.objsubid IS NOT DISTINCT FROM kl.objsubid
+        AND bl.pid <> kl.pid
+    JOIN pg_stat_activity aa ON aa.pid = kl.pid
+    WHERE NOT bl.granted
+)
+SELECT DISTINCT ON (blocked_pid, blocker_pid)
+    blocked_pid,
+    blocked_usename,
+    blocked_xact_start,
+    blocked_wait_seconds,
+    LEFT(blocked_query, 256) AS blocked_query,
+    blocker_pid,
+    blocker_usename,
+    blocker_state,
+    blocker_waiting,
+    LEFT(blocker_query, 256) AS blocker_query
+FROM blocking
+ORDER BY blocked_pid, blocker_pid, blocked_wait_seconds DESC NULLS LAST
+LIMIT $1
+"#;
 
 #[instrument(skip_all)]
 pub async fn run(ctx: &AppContext) -> Result<()> {
@@ -52,6 +103,48 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
 
     let longest_tx = to_optional_positive(longest_transaction_seconds);
     let longest_blocked = to_optional_positive(longest_blocked_seconds);
+
+    let blocking_rows = sqlx::query(BLOCKING_EVENTS_SQL)
+        .bind(50_i64)
+        .fetch_all(&ctx.pool)
+        .await?;
+
+    let redact_sql = ctx.config.security.redact_sql_text;
+    let mut blocking_events = Vec::with_capacity(blocking_rows.len());
+    for row in blocking_rows {
+        let blocked_pid: i32 = row.try_get("blocked_pid")?;
+        let blocked_usename: Option<String> = row.try_get("blocked_usename")?;
+        let blocked_xact_start: Option<DateTime<Utc>> = row.try_get("blocked_xact_start")?;
+        let blocked_wait_seconds: Option<f64> = row.try_get("blocked_wait_seconds")?;
+        let blocked_query_raw: Option<String> = row.try_get("blocked_query")?;
+        let blocker_pid: i32 = row.try_get("blocker_pid")?;
+        let blocker_usename: Option<String> = row.try_get("blocker_usename")?;
+        let blocker_state: Option<String> = row.try_get("blocker_state")?;
+        let blocker_waiting: bool = row.try_get("blocker_waiting")?;
+        let blocker_query_raw: Option<String> = row.try_get("blocker_query")?;
+
+        blocking_events.push(BlockingEvent {
+            blocked_pid,
+            blocked_usename,
+            blocked_transaction_start: blocked_xact_start,
+            blocked_wait_seconds,
+            blocked_query: normalize_query(blocked_query_raw, redact_sql),
+            blocker_pid,
+            blocker_usename,
+            blocker_state,
+            blocker_waiting,
+            blocker_query: normalize_query(blocker_query_raw, redact_sql),
+        });
+    }
+
+    blocking_events.sort_by(
+        |a, b| match (b.blocked_wait_seconds, a.blocked_wait_seconds) {
+            (Some(bw), Some(aw)) => bw.partial_cmp(&aw).unwrap_or(Ordering::Equal),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        },
+    );
 
     let autovac_rows = sqlx::query(
         r#"
@@ -166,6 +259,7 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
         }
     }
 
+    let blocking_for_state = blocking_events.clone();
     ctx.state
         .update_overview_with(|overview| {
             let replication_alerts: Vec<String> = overview
@@ -186,6 +280,7 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
             overview.connections = connections;
             overview.max_connections = max_connections;
             overview.blocked_sessions = blocked_sessions;
+            overview.blocking_events = blocking_for_state.clone();
             overview.longest_transaction_seconds = longest_tx;
             overview.longest_blocked_seconds = longest_blocked;
             overview.open_alerts = open_alerts.clone();
@@ -205,4 +300,14 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
     );
 
     Ok(())
+}
+
+fn normalize_query(value: Option<String>, redact: bool) -> Option<String> {
+    if redact {
+        None
+    } else {
+        value
+            .map(|q| q.trim().to_string())
+            .filter(|q| !q.is_empty())
+    }
 }
