@@ -13,6 +13,8 @@ pub struct AppSnapshots {
     pub autovacuum: Vec<AutovacuumEntry>,
     pub top_queries: Vec<TopQueryEntry>,
     pub storage: Vec<StorageEntry>,
+    pub stale_stats: Vec<StaleStatEntry>,
+    pub unused_indexes: Vec<UnusedIndexEntry>,
     pub partitions: Vec<PartitionSlice>,
     pub replication: Vec<ReplicaLag>,
     pub wraparound: WraparoundSnapshot,
@@ -25,6 +27,8 @@ impl Default for AppSnapshots {
             autovacuum: Vec::new(),
             top_queries: Vec::new(),
             storage: Vec::new(),
+            stale_stats: Vec::new(),
+            unused_indexes: Vec::new(),
             partitions: Vec::new(),
             replication: Vec::new(),
             wraparound: WraparoundSnapshot::default(),
@@ -40,14 +44,19 @@ pub struct OverviewSnapshot {
     pub connections: i64,
     pub max_connections: i64,
     pub blocked_sessions: i64,
+    pub blocking_events: Vec<BlockingEvent>,
     pub longest_transaction_seconds: Option<f64>,
     pub longest_blocked_seconds: Option<f64>,
     pub tps: Option<f64>,
     pub qps: Option<f64>,
     pub mean_latency_ms: Option<f64>,
+    pub latency_p95_ms: Option<f64>,
     pub wal_bytes_per_second: Option<f64>,
     pub checkpoints_timed: Option<i64>,
     pub checkpoints_requested: Option<i64>,
+    pub checkpoint_requested_ratio: Option<f64>,
+    pub checkpoint_mean_interval_seconds: Option<f64>,
+    pub temp_bytes_per_second: Option<f64>,
     pub open_alerts: Vec<String>,
     pub open_crit_alerts: Vec<String>,
 }
@@ -60,18 +69,38 @@ impl Default for OverviewSnapshot {
             connections: 0,
             max_connections: 0,
             blocked_sessions: 0,
+            blocking_events: Vec::new(),
             longest_transaction_seconds: None,
             longest_blocked_seconds: None,
             tps: None,
             qps: None,
             mean_latency_ms: None,
+            latency_p95_ms: None,
             wal_bytes_per_second: None,
             checkpoints_timed: None,
             checkpoints_requested: None,
+            checkpoint_requested_ratio: None,
+            checkpoint_mean_interval_seconds: None,
+            temp_bytes_per_second: None,
             open_alerts: Vec::new(),
             open_crit_alerts: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BlockingEvent {
+    pub blocked_pid: i32,
+    pub blocked_usename: Option<String>,
+    #[serde(with = "chrono::serde::ts_seconds_option")]
+    pub blocked_transaction_start: Option<DateTime<Utc>>,
+    pub blocked_wait_seconds: Option<f64>,
+    pub blocked_query: Option<String>,
+    pub blocker_pid: i32,
+    pub blocker_usename: Option<String>,
+    pub blocker_state: Option<String>,
+    pub blocker_waiting: bool,
+    pub blocker_query: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -113,6 +142,24 @@ pub struct StorageEntry {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct UnusedIndexEntry {
+    pub relation: String,
+    pub index: String,
+    pub bytes: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StaleStatEntry {
+    pub relation: String,
+    #[serde(with = "chrono::serde::ts_seconds_option")]
+    pub last_analyze: Option<DateTime<Utc>>,
+    #[serde(with = "chrono::serde::ts_seconds_option")]
+    pub last_autoanalyze: Option<DateTime<Utc>>,
+    pub hours_since_analyze: Option<f64>,
+    pub n_live_tup: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct PartitionSlice {
     pub parent: String,
     pub child_count: usize,
@@ -120,10 +167,13 @@ pub struct PartitionSlice {
     pub oldest_partition: Option<DateTime<Utc>>,
     #[serde(with = "chrono::serde::ts_seconds_option")]
     pub newest_partition: Option<DateTime<Utc>>,
+    #[serde(with = "chrono::serde::ts_seconds_option")]
+    pub latest_partition_upper: Option<DateTime<Utc>>,
     pub latest_partition_name: Option<String>,
     #[serde(with = "chrono::serde::ts_seconds_option")]
     pub next_expected_partition: Option<DateTime<Utc>>,
     pub missing_future_partition: bool,
+    pub future_gap_seconds: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -178,6 +228,7 @@ pub struct WorkloadSample {
     pub total_calls: Option<f64>,
     pub total_time_ms: Option<f64>,
     pub wal_bytes: Option<i64>,
+    pub temp_bytes: Option<i64>,
     pub checkpoints_timed: Option<i64>,
     pub checkpoints_requested: Option<i64>,
 }
@@ -187,10 +238,15 @@ pub struct WorkloadSummary {
     pub tps: Option<f64>,
     pub qps: Option<f64>,
     pub mean_latency_ms: Option<f64>,
+    pub latency_p95_ms: Option<f64>,
     pub wal_bytes_total: Option<i64>,
     pub wal_bytes_per_second: Option<f64>,
+    pub temp_bytes_total: Option<i64>,
+    pub temp_bytes_per_second: Option<f64>,
     pub checkpoints_timed_total: Option<i64>,
     pub checkpoints_requested_total: Option<i64>,
+    pub checkpoint_requested_ratio: Option<f64>,
+    pub checkpoint_mean_interval_seconds: Option<f64>,
 }
 
 impl WorkloadSummary {
@@ -235,14 +291,55 @@ impl WorkloadSummary {
             _ => None,
         };
 
+        let checkpoints_timed_delta = match (current.checkpoints_timed, previous.checkpoints_timed)
+        {
+            (Some(curr), Some(prev)) => Some((curr - prev).max(0)),
+            _ => None,
+        };
+
+        let checkpoints_requested_delta = match (
+            current.checkpoints_requested,
+            previous.checkpoints_requested,
+        ) {
+            (Some(curr), Some(prev)) => Some((curr - prev).max(0)),
+            _ => None,
+        };
+
+        let total_delta = match (checkpoints_timed_delta, checkpoints_requested_delta) {
+            (Some(t), Some(r)) => Some(t + r),
+            (Some(t), None) => Some(t),
+            (None, Some(r)) => Some(r),
+            (None, None) => None,
+        };
+
+        let checkpoint_requested_ratio = match (checkpoints_requested_delta, total_delta) {
+            (Some(req), Some(total)) if total > 0 => Some(req as f64 / total as f64),
+            _ => None,
+        };
+
+        let checkpoint_mean_interval_seconds = match total_delta {
+            Some(total) if total > 0 => Some(elapsed / total as f64),
+            _ => None,
+        };
+
+        let temp_bytes_per_second = match (current.temp_bytes, previous.temp_bytes) {
+            (Some(curr), Some(prev)) => compute_rate((curr - prev) as f64, elapsed),
+            _ => None,
+        };
+
         Some(Self {
             tps,
             qps,
             mean_latency_ms,
+            latency_p95_ms: None,
             wal_bytes_total: current.wal_bytes,
             wal_bytes_per_second,
+            temp_bytes_total: current.temp_bytes,
+            temp_bytes_per_second,
             checkpoints_timed_total: current.checkpoints_timed,
             checkpoints_requested_total: current.checkpoints_requested,
+            checkpoint_requested_ratio,
+            checkpoint_mean_interval_seconds,
         })
     }
 }
@@ -268,6 +365,7 @@ mod tests {
             total_calls: Some(2_000.0),
             total_time_ms: Some(40_000.0),
             wal_bytes: Some(1_000),
+            temp_bytes: Some(10_000),
             checkpoints_timed: Some(10),
             checkpoints_requested: Some(2),
         };
@@ -278,6 +376,7 @@ mod tests {
             total_calls: Some(2_300.0),
             total_time_ms: Some(43_000.0),
             wal_bytes: Some(1_600),
+            temp_bytes: Some(16_000),
             checkpoints_timed: Some(11),
             checkpoints_requested: Some(3),
         };
@@ -289,8 +388,22 @@ mod tests {
         assert!((summary.mean_latency_ms.expect("lat") - 10.0).abs() < 1e-6);
         assert_eq!(summary.wal_bytes_total, Some(1_600));
         assert!((summary.wal_bytes_per_second.expect("wal rate") - 10.0).abs() < 1e-6);
+        assert_eq!(summary.temp_bytes_total, Some(16_000));
+        assert!((summary.temp_bytes_per_second.expect("temp rate") - 100.0).abs() < 1e-6);
         assert_eq!(summary.checkpoints_timed_total, Some(11));
         assert_eq!(summary.checkpoints_requested_total, Some(3));
+        assert_eq!(
+            summary.checkpoint_requested_ratio,
+            Some(0.5),
+            "requested ratio mismatch"
+        );
+        assert!(
+            summary
+                .checkpoint_mean_interval_seconds
+                .map(|v| (v - 30.0).abs() < 1e-6)
+                .unwrap_or(false),
+            "mean interval mismatch"
+        );
     }
 
     #[test]
@@ -302,6 +415,7 @@ mod tests {
             total_calls: Some(200.0),
             total_time_ms: Some(1_000.0),
             wal_bytes: Some(1_000),
+            temp_bytes: Some(2_000),
             checkpoints_timed: Some(5),
             checkpoints_requested: Some(1),
         };
@@ -360,6 +474,16 @@ impl SharedState {
     pub async fn update_storage(&self, rows: Vec<StorageEntry>) {
         let mut guard = self.inner.snapshots.write().await;
         guard.storage = rows;
+    }
+
+    pub async fn update_unused_indexes(&self, rows: Vec<UnusedIndexEntry>) {
+        let mut guard = self.inner.snapshots.write().await;
+        guard.unused_indexes = rows;
+    }
+
+    pub async fn update_stale_stats(&self, rows: Vec<StaleStatEntry>) {
+        let mut guard = self.inner.snapshots.write().await;
+        guard.stale_stats = rows;
     }
 
     pub async fn update_partitions(&self, rows: Vec<PartitionSlice>) {
