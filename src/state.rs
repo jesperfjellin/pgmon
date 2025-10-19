@@ -139,6 +139,7 @@ pub struct StorageEntry {
     pub last_autovacuum: Option<DateTime<Utc>>,
     pub reltuples: Option<f64>,
     pub dead_tuples: Option<i64>,
+    pub estimated_bloat_bytes: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -386,6 +387,7 @@ mod tests {
         assert!((summary.tps.expect("tps") - 6.0).abs() < 1e-6);
         assert!((summary.qps.expect("qps") - 5.0).abs() < 1e-6);
         assert!((summary.mean_latency_ms.expect("lat") - 10.0).abs() < 1e-6);
+        assert!(summary.latency_p95_ms.is_none());
         assert_eq!(summary.wal_bytes_total, Some(1_600));
         assert!((summary.wal_bytes_per_second.expect("wal rate") - 10.0).abs() < 1e-6);
         assert_eq!(summary.temp_bytes_total, Some(16_000));
