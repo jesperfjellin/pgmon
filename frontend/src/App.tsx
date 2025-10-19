@@ -689,6 +689,7 @@ function StoragePanel({ rows }: { rows: StorageEntry[] }) {
                 <th className="numeric">Indexes</th>
                 <th className="numeric">TOAST</th>
                 <th className="numeric">% Dead</th>
+                <th className="numeric">Est. Bloat</th>
               </tr>
             </thead>
             <tbody>
@@ -702,6 +703,11 @@ function StoragePanel({ rows }: { rows: StorageEntry[] }) {
                   <td className="numeric">
                     {row.dead_tuple_ratio !== undefined
                       ? `${row.dead_tuple_ratio.toFixed(1)}%`
+                      : "—"}
+                  </td>
+                  <td className="numeric">
+                    {row.estimated_bloat_bytes !== undefined && row.estimated_bloat_bytes !== null
+                      ? formatBytes(row.estimated_bloat_bytes)
                       : "—"}
                   </td>
                 </tr>
