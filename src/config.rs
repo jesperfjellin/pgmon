@@ -160,6 +160,34 @@ pub struct AlertThresholds {
     pub repl_warn_s: u64,
     #[serde(default = "AlertThresholds::default_repl_crit_s")]
     pub repl_crit_s: u64,
+    #[serde(default = "AlertThresholds::default_stats_stale_warn_hours")]
+    pub stats_stale_warn_hours: u64,
+    #[serde(default = "AlertThresholds::default_stats_stale_crit_hours")]
+    pub stats_stale_crit_hours: u64,
+    #[serde(default = "AlertThresholds::default_wraparound_warn")]
+    pub wraparound_warn_tx_age: u64,
+    #[serde(default = "AlertThresholds::default_wraparound_crit")]
+    pub wraparound_crit_tx_age: u64,
+    #[serde(default = "AlertThresholds::default_wal_surge_warn")]
+    pub wal_surge_warn_bytes_per_sec: u64,
+    #[serde(default = "AlertThresholds::default_wal_surge_crit")]
+    pub wal_surge_crit_bytes_per_sec: u64,
+    #[serde(default = "AlertThresholds::default_temp_surge_warn")]
+    pub temp_surge_warn_bytes_per_sec: u64,
+    #[serde(default = "AlertThresholds::default_temp_surge_crit")]
+    pub temp_surge_crit_bytes_per_sec: u64,
+    #[serde(default = "AlertThresholds::default_autovac_starvation_warn_hours")]
+    pub autovac_starvation_warn_hours: u64,
+    #[serde(default = "AlertThresholds::default_autovac_starvation_crit_hours")]
+    pub autovac_starvation_crit_hours: u64,
+    #[serde(default = "AlertThresholds::default_checkpoint_ratio_warn")]
+    pub checkpoint_ratio_warn: f64,
+    #[serde(default = "AlertThresholds::default_checkpoint_ratio_crit")]
+    pub checkpoint_ratio_crit: f64,
+    #[serde(default = "AlertThresholds::default_checkpoint_interval_warn_seconds")]
+    pub checkpoint_interval_warn_seconds: u64,
+    #[serde(default = "AlertThresholds::default_checkpoint_interval_crit_seconds")]
+    pub checkpoint_interval_crit_seconds: u64,
 }
 
 impl AlertThresholds {
@@ -186,6 +214,62 @@ impl AlertThresholds {
     const fn default_repl_crit_s() -> u64 {
         300
     }
+
+    const fn default_stats_stale_warn_hours() -> u64 {
+        12
+    }
+
+    const fn default_stats_stale_crit_hours() -> u64 {
+        24
+    }
+
+    const fn default_wraparound_warn() -> u64 {
+        1_500_000_000
+    }
+
+    const fn default_wraparound_crit() -> u64 {
+        1_800_000_000
+    }
+
+    const fn default_wal_surge_warn() -> u64 {
+        100 * 1024 * 1024
+    }
+
+    const fn default_wal_surge_crit() -> u64 {
+        200 * 1024 * 1024
+    }
+
+    const fn default_temp_surge_warn() -> u64 {
+        50 * 1024 * 1024
+    }
+
+    const fn default_temp_surge_crit() -> u64 {
+        100 * 1024 * 1024
+    }
+
+    const fn default_autovac_starvation_warn_hours() -> u64 {
+        6
+    }
+
+    const fn default_autovac_starvation_crit_hours() -> u64 {
+        12
+    }
+
+    const fn default_checkpoint_ratio_warn() -> f64 {
+        0.2
+    }
+
+    const fn default_checkpoint_ratio_crit() -> f64 {
+        0.5
+    }
+
+    const fn default_checkpoint_interval_warn_seconds() -> u64 {
+        300
+    }
+
+    const fn default_checkpoint_interval_crit_seconds() -> u64 {
+        180
+    }
 }
 
 impl Default for AlertThresholds {
@@ -197,6 +281,20 @@ impl Default for AlertThresholds {
             long_txn_crit_s: Self::default_long_txn_crit_s(),
             repl_warn_s: Self::default_repl_warn_s(),
             repl_crit_s: Self::default_repl_crit_s(),
+            stats_stale_warn_hours: Self::default_stats_stale_warn_hours(),
+            stats_stale_crit_hours: Self::default_stats_stale_crit_hours(),
+            wraparound_warn_tx_age: Self::default_wraparound_warn(),
+            wraparound_crit_tx_age: Self::default_wraparound_crit(),
+            wal_surge_warn_bytes_per_sec: Self::default_wal_surge_warn(),
+            wal_surge_crit_bytes_per_sec: Self::default_wal_surge_crit(),
+            temp_surge_warn_bytes_per_sec: Self::default_temp_surge_warn(),
+            temp_surge_crit_bytes_per_sec: Self::default_temp_surge_crit(),
+            autovac_starvation_warn_hours: Self::default_autovac_starvation_warn_hours(),
+            autovac_starvation_crit_hours: Self::default_autovac_starvation_crit_hours(),
+            checkpoint_ratio_warn: Self::default_checkpoint_ratio_warn(),
+            checkpoint_ratio_crit: Self::default_checkpoint_ratio_crit(),
+            checkpoint_interval_warn_seconds: Self::default_checkpoint_interval_warn_seconds(),
+            checkpoint_interval_crit_seconds: Self::default_checkpoint_interval_crit_seconds(),
         }
     }
 }
