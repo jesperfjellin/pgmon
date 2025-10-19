@@ -3,11 +3,14 @@ import "./App.css";
 import {
   api,
   AutovacuumEntry,
+  BlockingEvent,
   OverviewSnapshot,
   PartitionSlice,
   ReplicaLag,
+  StaleStatEntry,
   StorageEntry,
   TopQueryEntry,
+  UnusedIndexEntry,
   WraparoundSnapshot,
   createPoller,
 } from "./api";
@@ -35,7 +38,7 @@ function formatBytes(value: number) {
   return `${v.toFixed(v >= 10 ? 0 : 1)} ${units[unitIndex]}`;
 }
 
-function formatSeconds(value?: number) {
+function formatSeconds(value?: number | null) {
   if (value === undefined || value === null || value < 0) {
     return "–";
   }
@@ -48,7 +51,7 @@ function formatSeconds(value?: number) {
   return `${(value / 3600).toFixed(1)}h`;
 }
 
-function formatRelativeTimestamp(value?: number) {
+function formatRelativeTimestamp(value?: number | null) {
   if (value === undefined || value === null) {
     return "never";
   }
@@ -86,6 +89,29 @@ function warnClass(condition: boolean, crit = false) {
   return "status status--ok";
 }
 
+function formatHours(value?: number | null) {
+  if (value === undefined || value === null || value < 0) {
+    return "–";
+  }
+  if (value >= 48) {
+    return `${(value / 24).toFixed(1)} d`;
+  }
+  return `${value.toFixed(1)} h`;
+}
+
+function formatQuerySnippet(query?: string | null) {
+  if (!query) {
+    return "–";
+  }
+  const normalized = query.replace(/\s+/g, " ").trim();
+  if (!normalized) {
+    return "–";
+  }
+  return normalized.length > 120
+    ? `${normalized.slice(0, 117)}…`
+    : normalized;
+}
+
 const SQL_SNIPPETS = {
   overview: `
 SELECT (SELECT COUNT(*) FROM pg_stat_activity) AS connections,
@@ -100,6 +126,46 @@ WHERE NOT l.granted;
 SELECT MAX(EXTRACT(EPOCH FROM now() - xact_start)) AS longest_transaction_seconds
 FROM pg_stat_activity
 WHERE xact_start IS NOT NULL;
+`,
+  blocking: `
+WITH blocking AS (
+    SELECT
+        bl.pid AS blocked_pid,
+        kl.pid AS blocker_pid,
+        ka.usename AS blocked_usename,
+        ka.xact_start AS blocked_xact_start,
+        CASE
+            WHEN ka.query_start IS NOT NULL THEN EXTRACT(EPOCH FROM now() - ka.query_start)
+            ELSE NULL
+        END AS blocked_wait_seconds,
+        ka.query AS blocked_query,
+        aa.usename AS blocker_usename,
+        aa.state AS blocker_state,
+        (aa.wait_event IS NOT NULL) AS blocker_waiting,
+        aa.query AS blocker_query
+    FROM pg_locks bl
+    JOIN pg_stat_activity ka ON ka.pid = bl.pid
+    JOIN pg_locks kl ON bl.locktype = kl.locktype
+        AND bl.database IS NOT DISTINCT FROM kl.database
+        AND bl.relation IS NOT DISTINCT FROM kl.relation
+        AND bl.page IS NOT DISTINCT FROM kl.page
+        AND bl.tuple IS NOT DISTINCT FROM kl.tuple
+        AND bl.virtualxid IS NOT DISTINCT FROM kl.virtualxid
+        AND bl.transactionid IS NOT DISTINCT FROM kl.transactionid
+        AND bl.classid IS NOT DISTINCT FROM kl.classid
+        AND bl.objid IS NOT DISTINCT FROM kl.objid
+        AND bl.objsubid IS NOT DISTINCT FROM kl.objsubid
+        AND bl.pid <> kl.pid
+    JOIN pg_stat_activity aa ON aa.pid = kl.pid
+    WHERE NOT bl.granted
+)
+SELECT DISTINCT ON (blocked_pid, blocker_pid)
+    blocked_pid,
+    blocker_pid,
+    blocked_wait_seconds
+FROM blocking
+ORDER BY blocked_pid, blocker_pid, blocked_wait_seconds DESC NULLS LAST
+LIMIT $1;
 `,
   autovacuum: `
 SELECT
@@ -144,6 +210,31 @@ WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
   AND c.relkind IN ('r','m')
 ORDER BY pg_total_relation_size(c.oid) DESC
 LIMIT $1;
+`,
+  unusedIndexes: `
+SELECT
+    rel.oid::regclass::text AS relation,
+    idx.oid::regclass::text AS index,
+    pg_relation_size(idx.oid) AS bytes
+FROM pg_class idx
+JOIN pg_index i ON i.indexrelid = idx.oid
+JOIN pg_class rel ON rel.oid = i.indrelid
+JOIN pg_namespace n ON n.oid = rel.relnamespace
+LEFT JOIN pg_stat_user_indexes s ON s.indexrelid = idx.oid
+WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+  AND idx.relkind = 'i'
+  AND COALESCE(s.idx_scan, 0) = 0
+  AND pg_relation_size(idx.oid) >= 100 * 1024 * 1024
+ORDER BY bytes DESC
+LIMIT $1;
+`,
+  staleStats: `
+SELECT
+    relid::regclass::text AS relation,
+    n_live_tup,
+    last_analyze,
+    last_autoanalyze
+FROM pg_stat_user_tables;
 `,
   replication: `
 SELECT
@@ -289,6 +380,11 @@ function OverviewPanel({
   const longestBlocked = overview.longest_blocked_seconds ?? 0;
   const blockedWarn = overview.blocked_sessions > 0 || longestBlocked >= BLOCKED_WARN;
   const blockedCrit = longestBlocked >= BLOCKED_CRIT;
+  const blockingEvents = overview.blocking_events ?? [];
+  const topBlocking = useMemo<BlockingEvent[]>(
+    () => blockingEvents.slice(0, 8),
+    [blockingEvents],
+  );
 
   return (
     <div className="panel">
@@ -337,11 +433,78 @@ function OverviewPanel({
               : "–"
           }
         />
+        <MetricCard
+          label="P95 Latency"
+          value={
+            overview.latency_p95_ms
+              ? `${overview.latency_p95_ms.toFixed(1)} ms`
+              : "–"
+          }
+        />
       </div>
       <p className="muted">
         Updated {formatRelativeTimestamp(overview.generated_at)}
       </p>
+      <section>
+        <h3>Blocking Chains</h3>
+        {topBlocking.length === 0 ? (
+          <p className="muted">No blocking chains detected.</p>
+        ) : (
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Blocked</th>
+                  <th className="numeric">Wait</th>
+                  <th>Blocker</th>
+                  <th>Status</th>
+                  <th>Queries</th>
+                </tr>
+              </thead>
+              <tbody>
+                {topBlocking.map((event) => (
+                  <tr key={`${event.blocked_pid}-${event.blocker_pid}`}>
+                    <td>
+                      <div>
+                        PID {event.blocked_pid}
+                        {event.blocked_usename && ` · ${event.blocked_usename}`}
+                      </div>
+                      <div className="muted">
+                        Txn {event.blocked_transaction_start
+                          ? formatRelativeTimestamp(event.blocked_transaction_start)
+                          : "unknown"}
+                      </div>
+                    </td>
+                    <td className="numeric">
+                      {formatSeconds(event.blocked_wait_seconds)}
+                    </td>
+                    <td>
+                      <div>
+                        PID {event.blocker_pid}
+                        {event.blocker_usename && ` · ${event.blocker_usename}`}
+                      </div>
+                    </td>
+                    <td>
+                      {event.blocker_state ?? "unknown"}
+                      {event.blocker_waiting ? " (waiting)" : ""}
+                    </td>
+                    <td>
+                      <div className="muted">
+                        Blocked: {formatQuerySnippet(event.blocked_query)}
+                      </div>
+                      <div className="muted">
+                        Blocker: {formatQuerySnippet(event.blocker_query)}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
       <SqlSnippet sql={SQL_SNIPPETS.overview} />
+      <SqlSnippet sql={SQL_SNIPPETS.blocking} />
     </div>
   );
 }
@@ -419,6 +582,45 @@ function TopQueriesPanel({ queries }: { queries: TopQueryEntry[] }) {
   );
 }
 
+function StaleStatsPanel({ rows }: { rows: StaleStatEntry[] }) {
+  const topRows = useMemo(() => rows.slice(0, 12), [rows]);
+
+  return (
+    <div className="panel wide">
+      <h2>Stale Statistics</h2>
+      {topRows.length === 0 ? (
+        <p className="muted">No tables exceed the stale-stat thresholds.</p>
+      ) : (
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Relation</th>
+                <th className="numeric">Hours Since Analyze</th>
+                <th>Last Analyze</th>
+                <th>Last Autoanalyze</th>
+                <th className="numeric">Live Tuples</th>
+              </tr>
+            </thead>
+            <tbody>
+              {topRows.map((row) => (
+                <tr key={row.relation}>
+                  <td>{row.relation}</td>
+                  <td className="numeric">{formatHours(row.hours_since_analyze)}</td>
+                  <td>{formatRelativeTimestamp(row.last_analyze ?? undefined)}</td>
+                  <td>{formatRelativeTimestamp(row.last_autoanalyze ?? undefined)}</td>
+                  <td className="numeric">{numberFormatter.format(row.n_live_tup)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <SqlSnippet sql={SQL_SNIPPETS.staleStats} />
+    </div>
+  );
+}
+
 function AutovacuumPanel({ tables }: { tables: AutovacuumEntry[] }) {
   const topTables = useMemo(() => tables.slice(0, 8), [tables]);
 
@@ -455,8 +657,8 @@ function AutovacuumPanel({ tables }: { tables: AutovacuumEntry[] }) {
                         ? `${pctDead.toFixed(1)}%`
                         : "—"}
                     </td>
-                    <td>{formatRelativeTimestamp(row.last_autovacuum)}</td>
-                    <td>{formatRelativeTimestamp(row.last_autoanalyze)}</td>
+                    <td>{formatRelativeTimestamp(row.last_autovacuum ?? undefined)}</td>
+                    <td>{formatRelativeTimestamp(row.last_autoanalyze ?? undefined)}</td>
                   </tr>
                 );
               })}
@@ -509,7 +711,47 @@ function StoragePanel({ rows }: { rows: StorageEntry[] }) {
         </div>
       )}
       <SqlSnippet sql={SQL_SNIPPETS.storage} />
-      <SqlSnippet sql={SQL_SNIPPETS.partitions} />
+    </div>
+  );
+}
+
+function UnusedIndexPanel({ indexes }: { indexes: UnusedIndexEntry[] }) {
+  if (indexes.length === 0) {
+    return (
+      <div className="panel">
+        <h2>Unused Indexes</h2>
+        <p className="muted">No large unused indexes detected.</p>
+        <SqlSnippet sql={SQL_SNIPPETS.unusedIndexes} />
+      </div>
+    );
+  }
+
+  const topIndexes = useMemo(() => indexes.slice(0, 20), [indexes]);
+
+  return (
+    <div className="panel wide">
+      <h2>Unused Indexes</h2>
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Relation</th>
+              <th>Index</th>
+              <th className="numeric">Bytes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {topIndexes.map((idx) => (
+              <tr key={`${idx.relation}-${idx.index}`}>
+                <td>{idx.relation}</td>
+                <td>{idx.index}</td>
+                <td className="numeric">{formatBytes(idx.bytes)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <SqlSnippet sql={SQL_SNIPPETS.unusedIndexes} />
     </div>
   );
 }
@@ -546,23 +788,59 @@ function PartitionPanel({ slices }: { slices: PartitionSlice[] }) {
       </div>
     );
   }
+
+  const sortedSlices = useMemo(() => {
+    return [...slices].sort((a, b) => {
+      if (a.missing_future_partition === b.missing_future_partition) {
+        return a.parent.localeCompare(b.parent);
+      }
+      return a.missing_future_partition ? -1 : 1;
+    });
+  }, [slices]);
+  const atRisk = useMemo(
+    () => sortedSlices.filter((slice) => slice.missing_future_partition),
+    [sortedSlices],
+  );
   return (
     <div className="panel wide">
       <h2>Partition Horizon</h2>
+      <p className="muted">
+        Retention advisor recommendations (period/DDL) are planned; this view tracks horizon
+        coverage and upcoming gaps only.
+      </p>
+      {atRisk.length > 0 ? (
+        <div className="alert-list">
+          <h3>Missing Future Partitions</h3>
+          <ul>
+            {atRisk.map((slice) => (
+              <li key={`gap-${slice.parent}`} className="alert alert--warn">
+                {slice.parent}: gap {formatSeconds(slice.future_gap_seconds)} ·
+                next due {formatRelativeTimestamp(slice.next_expected_partition)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : (
+        <p className="muted">
+          All parents extend beyond the configured partition horizon.
+        </p>
+      )}
       <div className="table-scroll">
         <table>
           <thead>
             <tr>
               <th>Parent</th>
               <th className="numeric">Children</th>
-              <th>Oldest</th>
-              <th>Newest</th>
+              <th>Oldest Start</th>
+              <th>Latest Partition</th>
+              <th>Upper Bound</th>
               <th>Next Expected</th>
+              <th>Gap</th>
               <th>Status</th>
             </tr>
           </thead>
           <tbody>
-            {slices.map((slice) => (
+            {sortedSlices.map((slice) => (
               <tr key={slice.parent}>
                 <td>{slice.parent}</td>
                 <td className="numeric">{slice.child_count}</td>
@@ -574,14 +852,13 @@ function PartitionPanel({ slices }: { slices: PartitionSlice[] }) {
                       )}`
                     : formatRelativeTimestamp(slice.newest_partition)}
                 </td>
-                <td>{formatRelativeTimestamp(slice.next_expected_partition)}</td>
                 <td>
-                  <span
-                    className={warnClass(
-                      slice.missing_future_partition,
-                      slice.missing_future_partition,
-                    )}
-                  >
+                  {formatRelativeTimestamp(slice.latest_partition_upper)}
+                </td>
+                <td>{formatRelativeTimestamp(slice.next_expected_partition)}</td>
+                <td>{formatSeconds(slice.future_gap_seconds)}</td>
+                <td>
+                  <span className={warnClass(slice.missing_future_partition)}>
                     {slice.missing_future_partition ? "At Risk" : "Healthy"}
                   </span>
                 </td>
@@ -590,6 +867,7 @@ function PartitionPanel({ slices }: { slices: PartitionSlice[] }) {
           </tbody>
         </table>
       </div>
+      <SqlSnippet sql={SQL_SNIPPETS.partitions} />
     </div>
   );
 }
@@ -650,6 +928,11 @@ function App() {
     [],
     60_000,
   );
+  const { data: staleStats } = usePollingData<StaleStatEntry[]>(
+    api.staleStats,
+    [],
+    3600_000,
+  );
   const { data: replication } = usePollingData<ReplicaLag[]>(
     api.replication,
     [],
@@ -662,6 +945,11 @@ function App() {
   );
   const { data: partitions } = usePollingData<PartitionSlice[]>(
     api.partitions,
+    [],
+    300_000,
+  );
+  const { data: unusedIndexes } = usePollingData<UnusedIndexEntry[]>(
+    api.unusedIndexes,
     [],
     300_000,
   );
@@ -695,7 +983,9 @@ function App() {
         <WraparoundPanel snapshot={wraparound} />
         <AutovacuumPanel tables={autovacuum} />
         <TopQueriesPanel queries={topQueries} />
+        <StaleStatsPanel rows={staleStats} />
         <StoragePanel rows={storage} />
+        <UnusedIndexPanel indexes={unusedIndexes} />
         <PartitionPanel slices={partitions} />
       </main>
       <footer className="app__footer">
