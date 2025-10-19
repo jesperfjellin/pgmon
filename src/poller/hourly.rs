@@ -26,11 +26,21 @@ WHERE pn.nspname NOT IN ('pg_catalog', 'information_schema')
 ORDER BY parent, child
 "#;
 
+const STALE_STATS_SQL: &str = r#"
+SELECT
+    relid::regclass::text AS relation,
+    n_live_tup,
+    last_analyze,
+    last_autoanalyze
+FROM pg_stat_user_tables
+"#;
+
 #[instrument(skip_all)]
 pub async fn run(ctx: &AppContext) -> Result<()> {
     update_partitions(ctx).await?;
     update_replication(ctx).await?;
     update_wraparound(ctx).await?;
+    update_stale_stats(ctx).await?;
     Ok(())
 }
 
@@ -89,26 +99,84 @@ async fn update_partitions(ctx: &AppContext) -> Result<()> {
 
     let mut summaries = Vec::with_capacity(acc.len());
     for (parent, data) in acc {
-        let missing_future = data
-            .latest_upper
-            .map(|upper| upper < horizon_cutoff)
-            .unwrap_or(false);
+        let PartitionAccumulator {
+            child_count,
+            oldest_start,
+            newest_start,
+            latest_upper,
+            latest_partition_name,
+        } = data;
 
-        let next_expected = data
-            .latest_upper
-            .map(|upper| upper + horizon)
-            .filter(|dt| *dt > now);
+        let (missing_future, future_gap_seconds, next_expected, latest_upper_bound) =
+            if let Some(upper) = latest_upper {
+                let missing = upper < horizon_cutoff;
+                let gap = if missing {
+                    Some((horizon_cutoff - upper).num_seconds().max(0))
+                } else {
+                    None
+                };
+                let next_candidate = upper + horizon;
+                let next = if next_candidate > now {
+                    Some(next_candidate)
+                } else {
+                    None
+                };
+                (missing, gap, next, Some(upper))
+            } else {
+                (false, None, None, None)
+            };
 
         summaries.push(PartitionSlice {
             parent,
-            child_count: data.child_count,
-            oldest_partition: data.oldest_start,
-            newest_partition: data.newest_start,
-            latest_partition_name: data.latest_partition_name,
+            child_count,
+            oldest_partition: oldest_start,
+            newest_partition: newest_start,
+            latest_partition_upper: latest_upper_bound,
+            latest_partition_name,
             next_expected_partition: next_expected,
             missing_future_partition: missing_future,
+            future_gap_seconds,
         });
     }
+
+    let at_risk: Vec<&PartitionSlice> = summaries
+        .iter()
+        .filter(|slice| slice.missing_future_partition)
+        .collect();
+
+    ctx.metrics
+        .set_partition_metrics(ctx.cluster_name(), &summaries);
+
+    for _slice in &at_risk {
+        ctx.metrics.inc_alert(
+            ctx.cluster_name(),
+            AlertKind::PartitionGap,
+            AlertSeverity::Warn,
+        );
+    }
+
+    let alerts: Vec<String> = at_risk
+        .iter()
+        .map(|slice| partition_alert_message(slice))
+        .collect();
+
+    let alerts_for_overview = alerts.clone();
+    ctx.state
+        .update_overview_with(move |overview| {
+            overview
+                .open_alerts
+                .retain(|alert| !alert.starts_with("Partition horizon"));
+            overview
+                .open_crit_alerts
+                .retain(|alert| !alert.starts_with("Partition horizon"));
+
+            if !alerts_for_overview.is_empty() {
+                overview
+                    .open_alerts
+                    .extend(alerts_for_overview.iter().cloned());
+            }
+        })
+        .await;
 
     ctx.state.update_partitions(summaries).await;
     Ok(())
@@ -246,7 +314,212 @@ async fn update_wraparound(ctx: &AppContext) -> Result<()> {
         &filtered_snapshot.databases,
         &filtered_snapshot.relations,
     );
+    emit_wraparound_alerts(ctx, &filtered_snapshot).await;
     ctx.state.update_wraparound(filtered_snapshot).await;
+    Ok(())
+}
+
+async fn emit_wraparound_alerts(ctx: &AppContext, snapshot: &WraparoundSnapshot) {
+    let thresholds = &ctx.config.alerts;
+    let warn_age = thresholds.wraparound_warn_tx_age as i64;
+    let crit_age = thresholds.wraparound_crit_tx_age as i64;
+
+    let mut warn = Vec::new();
+    let mut crit = Vec::new();
+
+    for db in &snapshot.databases {
+        classify_wraparound(
+            ctx,
+            &mut warn,
+            &mut crit,
+            "database",
+            &db.database,
+            db.tx_age,
+            warn_age,
+            crit_age,
+        );
+    }
+
+    for rel in &snapshot.relations {
+        classify_wraparound(
+            ctx,
+            &mut warn,
+            &mut crit,
+            "relation",
+            &rel.relation,
+            rel.tx_age,
+            warn_age,
+            crit_age,
+        );
+    }
+
+    ctx.state
+        .update_overview_with(|overview| {
+            overview
+                .open_alerts
+                .retain(|alert| !alert.starts_with("Wraparound"));
+            overview
+                .open_crit_alerts
+                .retain(|alert| !alert.starts_with("Wraparound"));
+            overview.open_alerts.extend(warn.iter().cloned());
+            overview.open_crit_alerts.extend(crit.iter().cloned());
+        })
+        .await;
+}
+
+fn classify_wraparound(
+    ctx: &AppContext,
+    warn: &mut Vec<String>,
+    crit: &mut Vec<String>,
+    kind: &str,
+    name: &str,
+    tx_age: i64,
+    warn_age: i64,
+    crit_age: i64,
+) {
+    if tx_age >= crit_age {
+        let message = format!(
+            "Wraparound {kind} critical {name} age {}",
+            format_tx_age(tx_age)
+        );
+        crit.push(message.clone());
+        ctx.metrics.inc_alert(
+            ctx.cluster_name(),
+            AlertKind::Wraparound,
+            AlertSeverity::Crit,
+        );
+    } else if tx_age >= warn_age {
+        let message = format!("Wraparound {kind} {name} age {}", format_tx_age(tx_age));
+        warn.push(message.clone());
+        ctx.metrics.inc_alert(
+            ctx.cluster_name(),
+            AlertKind::Wraparound,
+            AlertSeverity::Warn,
+        );
+    }
+}
+
+fn format_tx_age(age: i64) -> String {
+    if age >= 1_000_000_000 {
+        format!("{:.2}e9", age as f64 / 1_000_000_000.0)
+    } else if age >= 1_000_000 {
+        format!("{:.2}e6", age as f64 / 1_000_000.0)
+    } else {
+        age.to_string()
+    }
+}
+
+async fn update_stale_stats(ctx: &AppContext) -> Result<()> {
+    let rows = sqlx::query(STALE_STATS_SQL).fetch_all(&ctx.pool).await?;
+
+    let now = Utc::now();
+    let warn_hours = ctx.config.alerts.stats_stale_warn_hours as f64;
+    let crit_hours = ctx.config.alerts.stats_stale_crit_hours as f64;
+    let warn_seconds = warn_hours * 3600.0;
+    let crit_seconds = crit_hours * 3600.0;
+
+    let mut entries = Vec::new();
+    let mut alerts_warn = Vec::new();
+    let mut alerts_crit = Vec::new();
+
+    for row in rows {
+        let relation: String = row.try_get("relation")?;
+        let n_live_tup: i64 = row.try_get("n_live_tup")?;
+        let last_analyze: Option<DateTime<Utc>> = row.try_get("last_analyze")?;
+        let last_autoanalyze: Option<DateTime<Utc>> = row.try_get("last_autoanalyze")?;
+
+        let latest = match (last_analyze, last_autoanalyze) {
+            (Some(a), Some(b)) => Some(if a > b { a } else { b }),
+            (Some(a), None) => Some(a),
+            (None, Some(b)) => Some(b),
+            (None, None) => None,
+        };
+
+        let age_seconds = latest.map(|ts| (now - ts).num_seconds().max(0) as f64);
+        let is_stale = match age_seconds {
+            Some(secs) => secs >= warn_seconds,
+            None => true,
+        };
+
+        if !is_stale {
+            continue;
+        }
+
+        let (severity, message) = match age_seconds {
+            Some(secs) if secs >= crit_seconds => (
+                AlertSeverity::Crit,
+                format!("Stats stale {relation}: {:.1}h", secs / 3600.0),
+            ),
+            Some(secs) => (
+                AlertSeverity::Warn,
+                format!("Stats stale {relation}: {:.1}h", secs / 3600.0),
+            ),
+            None => (
+                AlertSeverity::Crit,
+                format!("Stats stale {relation}: never analyzed"),
+            ),
+        };
+
+        match severity {
+            AlertSeverity::Crit => alerts_crit.push(message.clone()),
+            AlertSeverity::Warn => alerts_warn.push(message.clone()),
+        }
+        ctx.metrics
+            .inc_alert(ctx.cluster_name(), AlertKind::StaleStats, severity);
+
+        let hours_since = age_seconds.map(|secs| secs / 3600.0);
+        entries.push(crate::state::StaleStatEntry {
+            relation,
+            last_analyze,
+            last_autoanalyze,
+            hours_since_analyze: hours_since,
+            n_live_tup,
+        });
+    }
+
+    entries.sort_by(|a, b| {
+        let a_age = a.hours_since_analyze.map(|h| h as i64).unwrap_or(i64::MAX);
+        let b_age = b.hours_since_analyze.map(|h| h as i64).unwrap_or(i64::MAX);
+        b_age.cmp(&a_age)
+    });
+
+    let limit = ctx.config.limits.top_relations as usize;
+    let limited = if entries.len() > limit {
+        entries[..limit].to_vec()
+    } else {
+        entries.clone()
+    };
+
+    ctx.metrics
+        .set_stale_stats_metrics(ctx.cluster_name(), &limited);
+    ctx.state.update_stale_stats(limited.clone()).await;
+
+    if !alerts_warn.is_empty() || !alerts_crit.is_empty() {
+        ctx.state
+            .update_overview_with(|overview| {
+                overview
+                    .open_alerts
+                    .retain(|alert| !alert.starts_with("Stats stale"));
+                overview
+                    .open_crit_alerts
+                    .retain(|alert| !alert.starts_with("Stats stale"));
+                overview.open_alerts.extend(alerts_warn.clone());
+                overview.open_crit_alerts.extend(alerts_crit.clone());
+            })
+            .await;
+    } else {
+        ctx.state
+            .update_overview_with(|overview| {
+                overview
+                    .open_alerts
+                    .retain(|alert| !alert.starts_with("Stats stale"));
+                overview
+                    .open_crit_alerts
+                    .retain(|alert| !alert.starts_with("Stats stale"));
+            })
+            .await;
+    }
+
     Ok(())
 }
 
@@ -262,6 +535,27 @@ fn filter_wraparound_snapshot(snapshot: WraparoundSnapshot) -> WraparoundSnapsho
     WraparoundSnapshot {
         databases,
         relations: snapshot.relations,
+    }
+}
+
+fn partition_alert_message(slice: &PartitionSlice) -> String {
+    let next_due = slice
+        .next_expected_partition
+        .as_ref()
+        .map(|ts| ts.format("%Y-%m-%d %H:%M UTC").to_string())
+        .unwrap_or_else(|| "unknown".into());
+
+    if let Some(gap_seconds) = slice.future_gap_seconds {
+        let gap_hours = (gap_seconds as f64 / 3600.0).max(0.0);
+        format!(
+            "Partition horizon risk {}: coverage lags {:.1}h (next due {next_due})",
+            slice.parent, gap_hours
+        )
+    } else {
+        format!(
+            "Partition horizon risk {}: next due {next_due}",
+            slice.parent
+        )
     }
 }
 
