@@ -3,7 +3,7 @@ use sqlx::Row;
 use tracing::instrument;
 
 use crate::app::AppContext;
-use crate::state::StorageEntry;
+use crate::state::{StorageEntry, UnusedIndexEntry};
 
 const DEEP_SAMPLE_SQL: &str = r#"
 SELECT
@@ -41,6 +41,26 @@ WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
 ORDER BY pg_relation_size(idx.oid) DESC
 LIMIT $1
 "#;
+
+const UNUSED_INDEX_SQL: &str = r#"
+SELECT
+    rel.oid::regclass::text AS relation,
+    idx.oid::regclass::text AS index,
+    pg_relation_size(idx.oid)::bigint AS bytes
+FROM pg_class idx
+JOIN pg_index i ON i.indexrelid = idx.oid
+JOIN pg_class rel ON rel.oid = i.indrelid
+JOIN pg_namespace n ON n.oid = rel.relnamespace
+LEFT JOIN pg_stat_user_indexes s ON s.indexrelid = idx.oid
+WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+  AND idx.relkind = 'i'
+  AND COALESCE(s.idx_scan, 0) = 0
+  AND pg_relation_size(idx.oid) >= $1
+ORDER BY bytes DESC
+LIMIT $2
+"#;
+
+const UNUSED_INDEX_MIN_BYTES: i64 = 100 * 1024 * 1024; // 100 MiB threshold
 
 #[instrument(skip_all)]
 pub async fn run(ctx: &AppContext) -> Result<()> {
@@ -105,6 +125,28 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
     ctx.metrics
         .set_index_usage_metrics(ctx.cluster_name(), &index_stats);
 
+    let unused_rows = sqlx::query(UNUSED_INDEX_SQL)
+        .bind(UNUSED_INDEX_MIN_BYTES)
+        .bind(index_limit)
+        .fetch_all(&ctx.pool)
+        .await?;
+
+    let mut unused = Vec::with_capacity(unused_rows.len());
+    for row in unused_rows {
+        let relation: String = row.try_get("relation")?;
+        let index: String = row.try_get("index")?;
+        let bytes: i64 = row.try_get("bytes")?;
+        unused.push(UnusedIndexEntry {
+            relation,
+            index,
+            bytes,
+        });
+    }
+
+    ctx.metrics
+        .set_unused_index_metrics(ctx.cluster_name(), &unused);
+
     ctx.state.update_storage(entries).await;
+    ctx.state.update_unused_indexes(unused).await;
     Ok(())
 }
