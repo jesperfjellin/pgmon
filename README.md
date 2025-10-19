@@ -104,11 +104,11 @@ All metrics include `{cluster,db}` unless noted.
 * **Locks:**
   `pg_blocked_sessions_total`, `pg_longest_blocked_seconds`
 * **Autovacuum:**
-  `pg_autovacuum_jobs{phase}`, `pg_table_last_autovacuum_seconds{relation}`, `pg_table_last_autoanalyze_seconds{relation}`
+  `pg_autovacuum_jobs{phase}`, `pg_table_last_autovacuum_seconds{relation}`, `pg_table_last_autoanalyze_seconds{relation}`, `pg_dead_tuple_backlog_alert{relation,severity}` (1=warn/2=crit)
 * **Tuples/bloat signals:**
   `pg_table_dead_tuples{relation}`, `pg_table_pct_dead{relation}`
 * **Storage:**
-  `pg_relation_size_bytes{relation,relkind}`, `pg_index_size_bytes{index}`
+  `pg_relation_size_bytes{relation,relkind}`, `pg_relation_table_bytes{relation,relkind}`, `pg_relation_index_bytes{relation,relkind}`, `pg_relation_toast_bytes{relation,relkind}`
 * **Index usage:**
   `pg_index_scans_total{index}`
 * **WAL / checkpoints:**
@@ -118,9 +118,11 @@ All metrics include `{cluster,db}` unless noted.
 * **Replication:**
   `pg_replication_lag_seconds{replica}`, `pg_replication_lag_bytes{replica}`
 * **Wraparound:**
-  `pg_wraparound_tx_age`
+  `pg_wraparound_database_tx_age{database}` (seconds), `pg_wraparound_relation_tx_age{relation}`
 * **Agent health:**
   `pgmon_scrape_duration_seconds{loop}`, `pgmon_last_scrape_success{loop}` (0/1), `pgmon_errors_total{loop}`
+* **Alerts:**
+  `alerts_total{cluster,kind,severity}`
 
 **Cardinality rules:**
 
@@ -168,6 +170,7 @@ Each alert has: **expr**, **for**, **severity**, **message**, **dedupe key**.
 * `GET /api/v1/storage` — Top-N tables/indexes by bytes; growth snapshot.
 * `GET /api/v1/partitions` — inventory by parent; oldest/newest; retention/future holes.
 * `GET /api/v1/replication` — per-replica lag.
+* `GET /api/v1/wraparound` — worst database/table wraparound ages.
 * `GET /` — minimal UI (Overview, Autovacuum, Top Queries, Storage/Idx, Partitions, Replication) served from the React/Vite bundle (`frontend/dist`).
   Each panel shows **SQL used** (collapsible) for transparency.
 
@@ -175,11 +178,13 @@ Each alert has: **expr**, **for**, **severity**, **message**, **dedupe key**.
 
 ## 8) Config & Runtime
 
-**YAML (example)**
+**YAML (checked-in, non-secret)**
 
 ```yaml
-cluster: "hydro-prod"
-dsn: "postgres://monitor:***@pg-host:5432/postgres?sslmode=require"
+# excerpt from `config.pgmon.sample.yaml`
+# Logical label for the monitored Postgres environment (think "prod-eu-west").
+cluster: "example-cluster"
+# Connection secrets are injected via the `PGMON_DSN` environment variable.
 sample_intervals:
   hot_path: "15s"
   workload: "60s"
@@ -189,6 +194,7 @@ limits:
   top_relations: 50
   top_indexes: 50
   top_queries: 50
+  partition_horizon_days: 7
 alerts:
   connections_warn: 0.80
   long_txn_warn_s: 300
@@ -200,15 +206,35 @@ notifiers:
   email_smtp: ""      # optional
 http:
   bind: "0.0.0.0:8181"
+  static_dir: "/opt/pgmon/ui"
 security:
   read_only_enforce: true
   redact_sql_text: true
+ui:
+  hide_postgres_defaults: true
 timeouts:
   statement_timeout_ms: 3000
   lock_timeout_ms: 1000
 ```
 
-**Env overrides:** `PGMON_DSN`, `PGMON_CLUSTER`, `PGMON_ALERTS_*`, etc.
+**`.env` (secrets + runtime overrides)**
+
+```bash
+# Required: read-only Postgres DSN with TLS.
+PGMON_DSN=postgres://pgmon_agent:REPLACE_WITH_PASSWORD@db.example.com:5432/app_db?sslmode=require
+
+# Optional: override the logical cluster label without editing YAML.
+# PGMON_CLUSTER=prod-eu-west
+
+# Logging verbosity.
+RUST_LOG=info
+```
+
+**Env overrides:** `PGMON_DSN` (required), `PGMON_CLUSTER`, `PGMON_CONFIG` (custom path), plus tracing/log variables.
+
+The repo ships a starter config at `config.pgmon.sample.yaml`. `docker compose up pgmon` mounts it into the container as `/config/pgmon.yaml`; copy and edit this file (or set `PGMON_CONFIG`) to point the agent at your own Postgres cluster.
+
+- `ui.hide_postgres_defaults` hides the built-in `postgres`/`template*` databases from wraparound panels, keeping the focus on user databases.
 
 ---
 
@@ -310,7 +336,8 @@ SELECT datname, temp_files, temp_bytes FROM pg_stat_database;
 SELECT c.oid::regclass AS relation,
        pg_total_relation_size(c.oid) AS total_bytes,
        pg_relation_size(c.oid) AS table_bytes,
-       pg_total_relation_size(c.oid) - pg_relation_size(c.oid) AS index_toast_bytes
+       pg_indexes_size(c.oid) AS index_bytes,
+       GREATEST(pg_total_relation_size(c.oid) - pg_relation_size(c.oid) - pg_indexes_size(c.oid), 0) AS toast_bytes
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 WHERE n.nspname NOT IN ('pg_catalog','information_schema')
@@ -377,6 +404,47 @@ ENTRYPOINT ["/usr/local/bin/pgmon","--config","/config/pgmon.yaml"]
 ```
 
 The release image bakes the React bundle (`frontend/dist`) under `/opt/pgmon/ui`; `axum` should mount that directory for `GET /`.
+
+### Backend crate layout (current)
+
+- `src/config.rs` loads YAML + env overrides into `AppConfig`.
+- `src/db.rs` provisions a read-only `sqlx::PgPool` and enforces session guardrails.
+- `src/metrics.rs` registers the `pgmon_*` self-metrics (duration, success, error counters).
+- `src/state.rs` tracks snapshot data + loop health behind async `RwLock`s.
+- `src/poller/mod.rs` wires the 15s/60s/10m/1h loops (15s hot path, 60s workload, 10m storage, 1h wraparound/replication) with budgets + metrics.
+- `src/poller/storage.rs` surfaces relation sizes + dead tuple ratios, while `src/poller/hourly.rs` now refreshes replication lag, partition inventory, and wraparound safety snapshots.
+- `src/http/mod.rs` exposes `/healthz`, `/metrics`, JSON APIs, and serves `frontend/dist/` via `ServeDir`.
+- `src/main.rs` handles CLI (`--config`), tracing, pool bootstrap, poller spawn, and graceful shutdown.
+
+Run the dev server with:
+
+```bash
+cargo run -- --config pgmon.yaml
+```
+
+### Implemented backend surface (March 2025)
+
+- **Startup:** read-only pool validation (`SET default_transaction_read_only`) and cluster label bootstrapped from config.
+- **Hot path loop (15s):**
+  - Active vs max connections, blocked session count, longest transaction + blocked wait.
+  - Feeds `/api/v1/overview` snapshot and Prometheus gauges (`pg_connections`, `pg_max_connections`, `pg_blocked_sessions_total`, `pg_longest_*`).
+- **Workload loop (60s):**
+  - Aggregates cluster TPS/QPS, mean latency (pg_stat_statements), WAL bytes, checkpoints.
+  - Top queries (queryid keyed) and autovacuum freshness table.
+  - Publishes workload gauges (`pg_tps`, `pg_qps`, `pg_query_latency_seconds_mean`, `pg_wal_*`, `pg_checkpoints_*`) and autovacuum tables + metrics (`pg_table_dead_tuples`, `pg_table_pct_dead`, `pg_table_last_auto*`).
+  - Exposed through `/api/v1/storage` and Prometheus (`pg_relation_size_bytes`, `pg_relation_table_bytes`, `pg_relation_index_bytes`, `pg_relation_toast_bytes`).
+- **Hourly loop (1h):**
+  - Replication lag (seconds/bytes) per replica, wraparound ages for databases + relations, partition inventory snapshot.
+  - Metrics exported via `pg_replication_lag_seconds/bytes`, `pg_wraparound_database_tx_age`, `pg_wraparound_relation_tx_age`.
+- **Partition inventory:** aggregated per-parent summary including child count, oldest/newest partition bounds (RFC3339 where available), latest partition name, and a `missing_future_partition` flag when the most recent upper bound is in the past. Served via `/api/v1/partitions`.
+- **REST API:** `/api/v1/overview`, `/autovacuum`, `/top-queries`, `/storage`, `/partitions`, `/replication`, `/wraparound` serve current snapshots. Static UI served from `http.static_dir`.
+- **Prometheus exporter:** `/metrics` renders all self-metrics plus collected gauges/counters; loop health histograms/counters track scrape duration, success, and errors (`pgmon_*`).
+- **Autovacuum backlog alerts:** dead tuples exceeding README thresholds emit overview warn/crit entries and maintain `pg_dead_tuple_backlog_alert{cluster,relation,severity}` (1=warn/2=crit).
+- **Graceful shutdown:** listens for Ctrl+C/SIGTERM, aborts pollers, drains Axum server.
+- **Frontend:** Vite/React single-page UI polls backend every 30s, displaying overview KPIs, warn/crit alert lists, autovacuum freshness, replication lag, storage top-N, partition horizon status, and wraparound safety summaries.
+- **Alert metrics:** Warn/crit events increment `alerts_total{cluster,kind,severity}`, enabling Prometheus alertmanager integrations while keeping severity history visible.
+
+The remaining work items from the spec (alert engines, notifier plumbing, frontend charts, partition gap detection, deep bloat sampling, etc.) still need implementation.
 
 **Kubernetes hints:** add `readOnlyRootFilesystem: true`, CPU/memory requests, liveness/readiness probes → `/healthz`.
 

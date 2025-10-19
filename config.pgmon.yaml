@@ -1,0 +1,60 @@
+##
+## pgmon agent configuration sample (non-secret)
+## ---------------------------------------------------------------------
+## Copy this file to `config.pgmon.yaml`, adjust the metadata, and keep
+## it under version control. Runtime secrets (DSNs, webhook tokens, etc.)
+## belong in `.env` or your secret manager, not in this file.
+##
+
+# Logical label for this Postgres environment (appears in metrics, logs, UI).
+# Pick something meaningful like "prod-eu-west" or "analytics-cluster".
+cluster: "prod-eu-west-cluster"
+
+sample_intervals:
+  # Hot-path loop: sessions, locks, autovacuum progress (default 15s).
+  hot_path: "15s"
+  # Workload loop: TPS/QPS, top statements, WAL (default 60s).
+  workload: "60s"
+  # Storage loop: Top-N relations, dead tuple backlog (default 10m).
+  storage: "10m"
+  # Hourly loop: bloat estimates, wraparound safety (default 1h).
+  hourly: "1h"
+
+limits:
+  # Top-N guards on relation, index, and query metrics.
+  top_relations: 50
+  top_indexes: 50
+  top_queries: 50
+  # Number of days ahead to examine partition boundaries.
+  partition_horizon_days: 7
+
+alerts:
+  connections_warn: 0.80
+  connections_crit: 0.95
+  long_txn_warn_s: 300
+  long_txn_crit_s: 1800
+  repl_warn_s: 30
+  repl_crit_s: 300
+
+notifiers:
+  # Optional: Slack webhook URL for alert notifications.
+  slack_webhook: ""
+  # Optional: SMTP connection string (e.g. smtp://user:pass@smtp.example.com:587?encryption=starttls).
+  email_smtp: ""
+
+http:
+  bind: "0.0.0.0:8181"
+  # Path inside the container where the React/Vite bundle is served from.
+  static_dir: "/opt/pgmon/ui"
+
+security:
+  read_only_enforce: true
+  redact_sql_text: true
+
+ui:
+  # Hide built-in postgres/template databases from wraparound panels.
+  hide_postgres_defaults: true
+
+timeouts:
+  statement_timeout_ms: 3000
+  lock_timeout_ms: 1000

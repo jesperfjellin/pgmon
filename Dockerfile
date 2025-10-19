@@ -7,7 +7,7 @@ RUN npm install
 COPY frontend/ .
 RUN npm run build
 
-FROM rust:1.81-slim AS dev
+FROM rust:1.88-slim AS dev
 WORKDIR /workspace
 RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates nodejs npm \
@@ -20,8 +20,8 @@ FROM dev AS build
 WORKDIR /app
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir src \
-    && echo "fn main() { println!(\"bootstrap\"); }" > src/main.rs \
-    && cargo build --release \
+    && echo "fn main() {}" > src/main.rs \
+    && cargo fetch \
     && rm -rf src
 COPY src ./src
 RUN cargo build --release
