@@ -207,6 +207,7 @@ impl AppMetrics {
         self.storage.relation_table_bytes.reset();
         self.storage.relation_index_bytes.reset();
         self.storage.relation_toast_bytes.reset();
+        self.storage.relation_bloat_estimated_bytes.reset();
 
         for entry in entries {
             let relation = sanitize_label(&entry.relation);
@@ -230,6 +231,13 @@ impl AppMetrics {
                 .relation_toast_bytes
                 .with_label_values(&[cluster, relation.as_str(), relkind])
                 .set(entry.toast_bytes);
+
+            if let Some(bloat) = entry.estimated_bloat_bytes {
+                self.storage
+                    .relation_bloat_estimated_bytes
+                    .with_label_values(&[cluster, relation.as_str(), relkind])
+                    .set(bloat.max(0));
+            }
         }
     }
 
@@ -814,6 +822,7 @@ struct StorageMetrics {
     relation_table_bytes: IntGaugeVec,
     relation_index_bytes: IntGaugeVec,
     relation_toast_bytes: IntGaugeVec,
+    relation_bloat_estimated_bytes: IntGaugeVec,
 }
 
 impl StorageMetrics {
@@ -845,11 +854,21 @@ impl StorageMetrics {
         )?;
         registry.register(Box::new(relation_toast_bytes.clone()))?;
 
+        let relation_bloat_estimated_bytes = IntGaugeVec::new(
+            Opts::new(
+                "pg_relation_bloat_estimated_bytes",
+                "Estimated table bloat bytes derived from dead tuple density",
+            ),
+            &["cluster", "relation", "relkind"],
+        )?;
+        registry.register(Box::new(relation_bloat_estimated_bytes.clone()))?;
+
         Ok(Self {
             relation_size_bytes,
             relation_table_bytes,
             relation_index_bytes,
             relation_toast_bytes,
+            relation_bloat_estimated_bytes,
         })
     }
 }
@@ -1178,6 +1197,7 @@ mod tests {
             last_autovacuum: None,
             reltuples: Some(100.0),
             dead_tuples: Some(12_000),
+            estimated_bloat_bytes: Some(100_000),
         };
 
         metrics.set_storage_metrics("cluster", &[entry]);
