@@ -11,7 +11,7 @@
 
 * **Zero-write** monitoring (uses `pg_monitor` only).
 * Lightweight **poller loops** (15s / 60s / 10m / hourly) with strict time budgets.
-* **Top queries**, **locks**, **autovacuum health**, **WAL/checkpoints**, **replication lag**, **bloat signals**, **wraparound safety**, **partition sanity**.
+* **Top queries**, **locks**, **autovacuum health**, **WAL/checkpoints**, **replication lag**, **wraparound safety**, **partition sanity**.
 * **Prometheus exporter** + tiny **web UI**. (Alert notifiers such as Slack/Email are planned for a later release once core surfaces stabilize.)
 * Clear **SQL transparency**: every UI panel links to its SQL.
 
@@ -61,8 +61,8 @@
 * Connections vs `max_connections`
 * Long / idle-in-transaction sessions (max age)
 * Blocking chains (blocked > blocker, max wait)
-* Autovacuum activity (`pg_stat_progress_vacuum`)
-* Temp spill pulse (deltas of `temp_files/temp_bytes`) — optional here
+* Autovacuum workers by phase (`pg_stat_progress_vacuum`)
+* Temp spill pulse (current `temp_files/temp_bytes` deltas via `pg_stat_database`)
 
 **60 s loop (<3 s):**
 
@@ -81,9 +81,9 @@
 
 **Hourly loop (<60 s):**
 
-* Lightweight bloat estimate (size vs tuples; sample `pgstattuple` on Top-N)
+* Lightweight bloat estimate (size vs tuples; sample `pgstattuple` on Top-N) *(planned)*
 * Wraparound safety (`age(datfrozenxid)`, worst `relfrozenxid`)
-* Stale stats (time since last analyze)
+* Stale stats (time since last analyze) *(planned)*
 
 ---
 
@@ -97,6 +97,7 @@ All metrics include `{cluster,db}` unless noted.
   `pg_tps` (gauge via delta), `pg_qps`
 * **Latency (overall):**
   `pg_query_latency_seconds_mean`, `pg_query_latency_seconds_p95`
+  *(`p95` requires `pg_stat_monitor`; falls back to `None` otherwise.)*
 * **Statements (per top query):**
   `pg_stmt_calls_total{queryid}`, `pg_stmt_time_seconds_total{queryid}`,
   `pg_stmt_shared_blks_read_total{queryid}`
@@ -105,18 +106,23 @@ All metrics include `{cluster,db}` unless noted.
   `pg_blocked_sessions_total`, `pg_longest_blocked_seconds`
 * **Autovacuum:**
   `pg_autovacuum_jobs{phase}`, `pg_table_last_autovacuum_seconds{relation}`, `pg_table_last_autoanalyze_seconds{relation}`, `pg_dead_tuple_backlog_alert{relation,severity}` (1=warn/2=crit)
-* **Tuples/bloat signals:**
+* **Tuples:**
   `pg_table_dead_tuples{relation}`, `pg_table_pct_dead{relation}`
+* **Stats freshness:**
+  `pg_table_stats_stale_seconds{relation}`
 * **Storage:**
   `pg_relation_size_bytes{relation,relkind}`, `pg_relation_table_bytes{relation,relkind}`, `pg_relation_index_bytes{relation,relkind}`, `pg_relation_toast_bytes{relation,relkind}`
 * **Index usage:**
-  `pg_index_scans_total{index}`
+  `pg_index_scans_total{index}`, `pg_unused_index_bytes{index}`
 * **WAL / checkpoints:**
-  `pg_wal_bytes_written_total`, `pg_checkpoints_timed_total`, `pg_checkpoints_requested_total`
+  `pg_wal_bytes_written_total`, `pg_checkpoints_timed_total`, `pg_checkpoints_requested_total`,
+  `pg_checkpoints_requested_ratio`, `pg_checkpoints_mean_interval_seconds`
 * **Temp:**
-  `pg_temp_bytes_total{db}`, `pg_temp_files_total{db}`
+  `pg_temp_bytes_total{db}`, `pg_temp_files_total{db}`, `pg_temp_bytes_written_per_second`
 * **Replication:**
   `pg_replication_lag_seconds{replica}`, `pg_replication_lag_bytes{replica}`
+* **Partitions:**
+  `pg_partition_missing_future{parent}`, `pg_partition_future_gap_seconds{parent}`
 * **Wraparound:**
   `pg_wraparound_database_tx_age{database}` (seconds), `pg_wraparound_relation_tx_age{relation}`
 * **Agent health:**
@@ -147,14 +153,38 @@ Each alert has: **expr**, **for**, **severity**, **message**, **dedupe key**.
 * **Stale stats**: changed in last 1h AND last (auto)analyze > 12h
   *“{{rel}}: stats stale {{age}}”*
 * **Autovacuum starvation**: high churn, rising dead tuples, no (auto)vacuum in 6h
+  *“Autovac starvation {{relation}} ({{hours}}h since run)”*
 * **Checkpoint thrash**: requested/(timed+requested) > 0.2 OR mean interval < 5m
+  *“Checkpoint thrash … requested ratio {{ratio}} / interval {{interval}}”*
 * **WAL surge**: wal bytes rate > baseline + 3σ over 15m
 * **Temp surge**: temp bytes rate > baseline + 3σ over 5m
+  *Implementation: pgmon surfaces rates via `pg_wal_bytes_written_per_second` / `pg_temp_bytes_written_per_second`; configure thresholds (`wal_surge_*`, `temp_surge_*`) or alert from Prometheus.*
 * **Replication lag**: > 30s (warn) / > 300s (crit) or bytes threshold
 * **Wraparound danger**: `age(datfrozenxid) > 1.5e9` (warn) / `> 1.8e9` (crit)
-* **Unused indexes**: `idx_scan = 0` for 7d **and** size > 100MB
+  *“Wraparound database {{db}} age {{tx_age}}”*
+* **Partition horizon risk**: newest partition upper bound < `now + partition_horizon` (warn)
+  *“{{parent}} gap {{gap_hours}}h (next due {{next_partition}})”*
+* **Unused indexes**: surface via `pg_unused_index_bytes` – recommend Prometheus alerting (e.g. warn at ≥100 MiB, crit at ≥500 MiB)
 
 > **Future notifier work:** Webhook/email delivery will come after the core telemetry set is stable; today alerts surface in the UI and Prometheus metrics only.
+
+> **Prometheus hint:**
+> ```yaml
+> - alert: PgmonUnusedIndexWarn
+>   expr: pgmon_pg_unused_index_bytes > 100 * 1024 * 1024
+>   for: 6h
+>   labels:
+>     severity: warn
+>   annotations:
+>     summary: "Unused index {{ $labels.relation }} -> {{ $labels.index }} ({{ $value | humanize1024 }})"
+> - alert: PgmonUnusedIndexCrit
+>   expr: pgmon_pg_unused_index_bytes > 500 * 1024 * 1024
+>   for: 6h
+>   labels:
+>     severity: crit
+>   annotations:
+>     summary: "Unused index critical {{ $labels.relation }} -> {{ $labels.index }} ({{ $value | humanize1024 }})"
+> ```
 
 ---
 
@@ -164,15 +194,16 @@ Each alert has: **expr**, **for**, **severity**, **message**, **dedupe key**.
 
 * `GET /healthz` — liveness/ready: DB ok, loops on schedule.
 * `GET /metrics` — Prometheus text format.
-* `GET /api/v1/overview` — connections, TPS/QPS, latency, WAL MB/s, checkpoints, open alerts.
+* `GET /api/v1/overview` — connections, TPS/QPS, latency, WAL MB/s, checkpoints, open alerts, and `blocking_events` (top blocker↔blocked chains including wait duration and optional query snippets when `security.redact_sql_text=false`).
 * `GET /api/v1/autovacuum` — table list: `%dead`, `dead/live`, last (auto)vacuum/analyze, hints.
 * `GET /api/v1/top-queries` — top by total_time/calls/I/O (ids + normalized sample).
 * `GET /api/v1/storage` — Top-N tables/indexes by bytes; growth snapshot.
-* `GET /api/v1/partitions` — inventory by parent; oldest/newest; retention/future holes.
+* `GET /api/v1/unused-indexes` — indexes with `idx_scan = 0` and size ≥ 100 MiB (relation/index name, bytes).
+* `GET /api/v1/stale-stats` — tables whose statistics are older than alert thresholds.
+* `GET /api/v1/partitions` — inventory by parent; oldest/newest; latest upper bound; gap seconds; retention/future holes.
 * `GET /api/v1/replication` — per-replica lag.
 * `GET /api/v1/wraparound` — worst database/table wraparound ages.
-* `GET /` — minimal UI (Overview, Autovacuum, Top Queries, Storage/Idx, Partitions, Replication) served from the React/Vite bundle (`frontend/dist`).
-  Each panel shows **SQL used** (collapsible) for transparency.
+* `GET /` — minimal UI (Overview, Autovacuum, Top Queries, Stale Stats, Storage/Idx, Partitions, Replication) served from the React/Vite bundle (`frontend/dist`). Each panel shows **SQL used** (collapsible) for transparency.
 
 ---
 
@@ -201,6 +232,20 @@ alerts:
   long_txn_crit_s: 1800
   repl_warn_s: 30
   repl_crit_s: 300
+  stats_stale_warn_hours: 12
+  stats_stale_crit_hours: 24
+  wraparound_warn_tx_age: 1500000000
+  wraparound_crit_tx_age: 1800000000
+  wal_surge_warn_bytes_per_sec: 104857600      # 100 MiB/s
+  wal_surge_crit_bytes_per_sec: 209715200      # 200 MiB/s
+  temp_surge_warn_bytes_per_sec: 52428800      # 50 MiB/s
+  temp_surge_crit_bytes_per_sec: 104857600     # 100 MiB/s
+  autovac_starvation_warn_hours: 6
+  autovac_starvation_crit_hours: 12
+  checkpoint_ratio_warn: 0.2
+  checkpoint_ratio_crit: 0.5
+  checkpoint_interval_warn_seconds: 300
+  checkpoint_interval_crit_seconds: 180
 notifiers:
   slack_webhook: ""   # optional
   email_smtp: ""      # optional
@@ -275,24 +320,46 @@ LIMIT 50;
 **Blockers vs blocked**
 
 ```sql
-SELECT bl.pid AS blocked_pid, ka.query AS blocked_query,
-       kl.pid AS blocker_pid, aa.query AS blocker_query,
-       now() - ka.query_start AS blocked_for
-FROM pg_locks bl
-JOIN pg_stat_activity ka ON ka.pid = bl.pid
-JOIN pg_locks kl ON bl.locktype = kl.locktype
- AND bl.database IS NOT DISTINCT FROM kl.database
- AND bl.relation IS NOT DISTINCT FROM kl.relation
- AND bl.page IS NOT DISTINCT FROM kl.page
- AND bl.tuple IS NOT DISTINCT FROM kl.tuple
- AND bl.virtualxid IS NOT DISTINCT FROM kl.virtualxid
- AND bl.transactionid IS NOT DISTINCT FROM kl.transactionid
- AND bl.classid IS NOT DISTINCT FROM kl.classid
- AND bl.objid IS NOT DISTINCT FROM kl.objid
- AND bl.objsubid IS NOT DISTINCT FROM kl.objsubid
- AND bl.pid <> kl.pid
-JOIN pg_stat_activity aa ON aa.pid = kl.pid
-WHERE NOT bl.granted;
+WITH blocking AS (
+    SELECT
+        bl.pid AS blocked_pid,
+        kl.pid AS blocker_pid,
+        ka.usename AS blocked_usename,
+        ka.xact_start AS blocked_xact_start,
+        CASE WHEN ka.query_start IS NOT NULL
+             THEN EXTRACT(EPOCH FROM now() - ka.query_start)
+             ELSE NULL
+        END AS blocked_wait_seconds,
+        LEFT(ka.query, 256) AS blocked_query,
+        aa.usename AS blocker_usename,
+        aa.state AS blocker_state,
+        (aa.wait_event IS NOT NULL) AS blocker_waiting,
+        LEFT(aa.query, 256) AS blocker_query
+    FROM pg_locks bl
+    JOIN pg_stat_activity ka ON ka.pid = bl.pid
+    JOIN pg_locks kl ON bl.locktype = kl.locktype
+        AND bl.database IS NOT DISTINCT FROM kl.database
+        AND bl.relation IS NOT DISTINCT FROM kl.relation
+        AND bl.page IS NOT DISTINCT FROM kl.page
+        AND bl.tuple IS NOT DISTINCT FROM kl.tuple
+        AND bl.virtualxid IS NOT DISTINCT FROM kl.virtualxid
+        AND bl.transactionid IS NOT DISTINCT FROM kl.transactionid
+        AND bl.classid IS NOT DISTINCT FROM kl.classid
+        AND bl.objid IS NOT DISTINCT FROM kl.objid
+        AND bl.objsubid IS NOT DISTINCT FROM kl.objsubid
+        AND bl.pid <> kl.pid
+    JOIN pg_stat_activity aa ON aa.pid = kl.pid
+    WHERE NOT bl.granted
+)
+SELECT DISTINCT ON (blocked_pid, blocker_pid)
+    blocked_pid,
+    blocker_pid,
+    blocked_wait_seconds,
+    blocked_query,
+    blocker_query
+FROM blocking
+ORDER BY blocked_pid, blocker_pid, blocked_wait_seconds DESC NULLS LAST
+LIMIT 50;
 ```
 
 **Top statements**
@@ -427,24 +494,31 @@ cargo run -- --config pgmon.yaml
 - **Startup:** read-only pool validation (`SET default_transaction_read_only`) and cluster label bootstrapped from config.
 - **Hot path loop (15s):**
   - Active vs max connections, blocked session count, longest transaction + blocked wait.
-  - Feeds `/api/v1/overview` snapshot and Prometheus gauges (`pg_connections`, `pg_max_connections`, `pg_blocked_sessions_total`, `pg_longest_*`).
+  - Blocking chain snapshot (top blocker↔blocked pairs with wait duration; queries omitted when `redact_sql_text=true`).
+  - Autovacuum progress aggregation and temp spill deltas.
+  - Feeds `/api/v1/overview` snapshot and Prometheus gauges (`pg_connections`, `pg_max_connections`, `pg_blocked_sessions_total`, `pg_longest_*`, `pg_autovacuum_jobs{phase}`, `pg_temp_*`).
 - **Workload loop (60s):**
   - Aggregates cluster TPS/QPS, mean latency (pg_stat_statements), WAL bytes, checkpoints.
   - Top queries (queryid keyed) and autovacuum freshness table.
   - Publishes workload gauges (`pg_tps`, `pg_qps`, `pg_query_latency_seconds_mean`, `pg_wal_*`, `pg_checkpoints_*`) and autovacuum tables + metrics (`pg_table_dead_tuples`, `pg_table_pct_dead`, `pg_table_last_auto*`).
-  - Exposed through `/api/v1/storage` and Prometheus (`pg_relation_size_bytes`, `pg_relation_table_bytes`, `pg_relation_index_bytes`, `pg_relation_toast_bytes`).
+  - Exposed through `/api/v1/overview`, `/api/v1/top-queries`, and Prometheus (`pg_stmt_*`).
+- **Storage loop (10m):**
+  - Top relations by size with heap/index/TOAST split, dead tuple %, and index scan counters.
+  - Unused index spotlight (`idx_scan = 0`, size ≥100 MiB) emitted via `/api/v1/unused-indexes` + `pg_unused_index_bytes`.
+  - Exposed through `/api/v1/storage` and Prometheus (`pg_relation_size_bytes`, `pg_relation_table_bytes`, `pg_relation_index_bytes`, `pg_relation_toast_bytes`, `pg_index_scans_total`, `pg_unused_index_bytes`).
 - **Hourly loop (1h):**
   - Replication lag (seconds/bytes) per replica, wraparound ages for databases + relations, partition inventory snapshot.
-  - Metrics exported via `pg_replication_lag_seconds/bytes`, `pg_wraparound_database_tx_age`, `pg_wraparound_relation_tx_age`.
-- **Partition inventory:** aggregated per-parent summary including child count, oldest/newest partition bounds (RFC3339 where available), latest partition name, and a `missing_future_partition` flag when the most recent upper bound is in the past. Served via `/api/v1/partitions`.
-- **REST API:** `/api/v1/overview`, `/autovacuum`, `/top-queries`, `/storage`, `/partitions`, `/replication`, `/wraparound` serve current snapshots. Static UI served from `http.static_dir`.
+  - Stale-stat detection (time since analyze).
+  - Metrics exported via `pg_replication_lag_seconds/bytes`, `pg_wraparound_database_tx_age`, `pg_wraparound_relation_tx_age`, `pg_table_stats_stale_seconds`.
+- **Partition inventory:** aggregated per-parent summary including child count, oldest/newest partition bounds (RFC3339 where available), latest upper bound, latest partition name, derived `future_gap_seconds`, and a `missing_future_partition` flag when coverage stops before `now + horizon`. Served via `/api/v1/partitions`, exported via `pg_partition_missing_future` / `pg_partition_future_gap_seconds`, and emits warn-level overview alerts plus `alerts_total{partition_gap}` when gaps persist. (Upcoming work: retention advisor guidance for period/DDL suggestions—documented here for roadmap visibility.)
+- **REST API:** `/api/v1/overview`, `/autovacuum`, `/top-queries`, `/storage`, `/stale-stats`, `/partitions`, `/replication`, `/wraparound` serve current snapshots. Static UI served from `http.static_dir`.
 - **Prometheus exporter:** `/metrics` renders all self-metrics plus collected gauges/counters; loop health histograms/counters track scrape duration, success, and errors (`pgmon_*`).
 - **Autovacuum backlog alerts:** dead tuples exceeding README thresholds emit overview warn/crit entries and maintain `pg_dead_tuple_backlog_alert{cluster,relation,severity}` (1=warn/2=crit).
 - **Graceful shutdown:** listens for Ctrl+C/SIGTERM, aborts pollers, drains Axum server.
-- **Frontend:** Vite/React single-page UI polls backend every 30s, displaying overview KPIs, warn/crit alert lists, autovacuum freshness, replication lag, storage top-N, partition horizon status, and wraparound safety summaries.
+- **Frontend:** Vite/React single-page UI polls backend every 30s, displaying overview KPIs, blocking chain detail, warn/crit alert lists, autovacuum freshness, top queries, replication lag, storage top-N (heap/index/TOAST split), unused index spotlight, partition gap alerts + horizon table, and wraparound safety summaries. Each panel includes a collapsible SQL snippet for transparency.
 - **Alert metrics:** Warn/crit events increment `alerts_total{cluster,kind,severity}`, enabling Prometheus alertmanager integrations while keeping severity history visible.
 
-The remaining work items from the spec (alert engines, notifier plumbing, frontend charts, partition gap detection, deep bloat sampling, etc.) still need implementation.
+The remaining work items from the spec (alert engines, notifier plumbing, frontend charts, partition gap detection, advanced bloat analysis, etc.) still need implementation.
 
 **Kubernetes hints:** add `readOnlyRootFilesystem: true`, CPU/memory requests, liveness/readiness probes → `/healthz`.
 
@@ -466,7 +540,7 @@ The remaining work items from the spec (alert engines, notifier plumbing, fronte
 2. **15s loop** (connections, long/idle xacts, locks, autovac, temp pulse)
 3. **60s loop** (statements, WAL/bgwriter, replication, freshness)
 4. **5–10m loop** (sizes, dead/live, index usage, partitions)
-5. **Hourly** (wraparound, stale stats, lite bloat)
+5. **Hourly** (wraparound, stale stats)
 6. **Alerts** (internal engine + Slack/Email)
 7. **Minimal UI** (Overview, Autovacuum, Top queries, Storage/Idx, Partitions, Replication)
 8. **Prometheus parity** (all surfaced metrics exported 1:1)
