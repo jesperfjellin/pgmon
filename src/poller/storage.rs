@@ -90,6 +90,17 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
         };
 
         let dead_tuples_count = dead_tuples;
+        let estimated_bloat_bytes = match (dead_tuples, tuple_denominator) {
+            (Some(dead), Some(total)) if total > 0.0 => {
+                let avg_row_bytes = table_bytes as f64 / total;
+                Some(
+                    (avg_row_bytes * dead as f64)
+                        .round()
+                        .clamp(0.0, table_bytes as f64) as i64,
+                )
+            }
+            _ => None,
+        };
 
         entries.push(StorageEntry {
             relation,
@@ -102,6 +113,7 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
             last_autovacuum,
             reltuples,
             dead_tuples: dead_tuples_count,
+            estimated_bloat_bytes,
         });
     }
 
