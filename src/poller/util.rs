@@ -23,3 +23,11 @@ pub fn is_missing_column(error: &dyn DatabaseError) -> bool {
         false
     }
 }
+
+pub fn is_missing_function(error: &dyn DatabaseError) -> bool {
+    if let Some(code) = error.code() {
+        code == "42883"
+    } else {
+        false
+    }
+}
