@@ -392,42 +392,52 @@ fn format_seconds(sec: f64) -> String {
 }
 
 async fn fetch_latency_p95(ctx: &AppContext) -> Option<f64> {
-    match sqlx::query(
-        r#"
-        SELECT MAX(resp_percentile_95) AS p95
-        FROM pg_stat_monitor
-        "#,
-    )
-    .fetch_one(&ctx.pool)
-    .await
-    {
-        Ok(row) => match row.try_get::<Option<f64>, _>("p95") {
-            Ok(value) => {
-                PG_STAT_MONITOR_MISSING.store(false, Ordering::Relaxed);
-                value
+    const COLUMNS: &[(&str, f64)] = &[("resp_percentile_95", 1_000.0), ("resp_p95_time", 1_000.0)];
+
+    let mut missing = false;
+
+    for (column, divisor) in COLUMNS {
+        let sql = format!("SELECT MAX({}) AS p95 FROM pg_stat_monitor", column);
+        match sqlx::query(&sql).fetch_one(&ctx.pool).await {
+            Ok(row) => match row.try_get::<Option<f64>, _>("p95") {
+                Ok(Some(value)) => {
+                    PG_STAT_MONITOR_MISSING.store(false, Ordering::Relaxed);
+                    return Some(value / divisor);
+                }
+                Ok(None) => {
+                    PG_STAT_MONITOR_MISSING.store(false, Ordering::Relaxed);
+                    return None;
+                }
+                Err(err) => {
+                    warn!(error = ?err, column, "failed to read column from pg_stat_monitor");
+                    return None;
+                }
+            },
+            Err(sqlx::Error::Database(db_err)) => {
+                let error = db_err.as_ref();
+                if is_missing_relation(error) {
+                    missing = true;
+                    break;
+                }
+                if is_missing_column(error) {
+                    missing = true;
+                    continue;
+                }
+                warn!(error = %error, column, "pg_stat_monitor query failed");
+                return None;
             }
             Err(err) => {
-                warn!(error = ?err, "failed to read resp_percentile_95 from pg_stat_monitor");
-                None
+                warn!(error = ?err, column, "failed to query pg_stat_monitor for latency p95");
+                return None;
             }
-        },
-        Err(sqlx::Error::Database(db_err)) => {
-            let error = db_err.as_ref();
-            if is_missing_relation(error) || is_missing_column(error) {
-                if !PG_STAT_MONITOR_MISSING.swap(true, Ordering::Relaxed) {
-                    warn!("pg_stat_monitor unavailable; latency p95 reporting disabled");
-                }
-                None
-            } else {
-                warn!(error = %error, "pg_stat_monitor query failed");
-                None
-            }
-        }
-        Err(err) => {
-            warn!(error = ?err, "failed to query pg_stat_monitor for latency p95");
-            None
         }
     }
+
+    if missing && !PG_STAT_MONITOR_MISSING.swap(true, Ordering::Relaxed) {
+        warn!("pg_stat_monitor missing p95 columns; latency p95 disabled");
+    }
+
+    None
 }
 
 async fn update_autovacuum(ctx: &AppContext) -> Result<()> {
