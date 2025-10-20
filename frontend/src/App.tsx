@@ -4,6 +4,7 @@ import {
   api,
   AutovacuumEntry,
   BlockingEvent,
+  BloatSample,
   OverviewSnapshot,
   PartitionSlice,
   ReplicaLag,
@@ -227,6 +228,27 @@ WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
   AND pg_relation_size(idx.oid) >= 100 * 1024 * 1024
 ORDER BY bytes DESC
 LIMIT $1;
+`,
+  bloat: `
+WITH top_relations AS (
+    SELECT c.oid::regclass AS rel,
+           c.oid,
+           n.nspname,
+           c.relname
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+      AND c.relkind = 'r'
+    ORDER BY pg_total_relation_size(c.oid) DESC
+    LIMIT $1
+)
+SELECT
+    (nspname || '.' || relname) AS relation,
+    stats.table_len AS table_bytes,
+    stats.free_space AS free_bytes,
+    stats.free_percent
+FROM top_relations
+JOIN LATERAL pgstattuple_approx(top_relations.rel) stats ON TRUE;
 `,
   staleStats: `
 SELECT
@@ -721,6 +743,52 @@ function StoragePanel({ rows }: { rows: StorageEntry[] }) {
   );
 }
 
+function BloatPanel({ samples }: { samples: BloatSample[] }) {
+  if (samples.length === 0) {
+    return (
+      <div className="panel">
+        <h2>Bloat Samples</h2>
+        <p className="muted">
+          Sampling uses `pgstattuple_approx` on the largest tables; install the extension to
+          enable precise measurements.
+        </p>
+        <SqlSnippet sql={SQL_SNIPPETS.bloat} />
+      </div>
+    );
+  }
+
+  const topSamples = useMemo(() => samples.slice(0, 20), [samples]);
+
+  return (
+    <div className="panel wide">
+      <h2>Bloat Samples</h2>
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Relation</th>
+              <th className="numeric">Table Bytes</th>
+              <th className="numeric">Free Bytes</th>
+              <th className="numeric">Free %</th>
+            </tr>
+          </thead>
+          <tbody>
+            {topSamples.map((sample) => (
+              <tr key={sample.relation}>
+                <td>{sample.relation}</td>
+                <td className="numeric">{formatBytes(sample.table_bytes)}</td>
+                <td className="numeric">{formatBytes(sample.free_bytes)}</td>
+                <td className="numeric">{sample.free_percent.toFixed(1)}%</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <SqlSnippet sql={SQL_SNIPPETS.bloat} />
+    </div>
+  );
+}
+
 function UnusedIndexPanel({ indexes }: { indexes: UnusedIndexEntry[] }) {
   if (indexes.length === 0) {
     return (
@@ -949,6 +1017,11 @@ function App() {
     [],
     300_000,
   );
+  const { data: bloatSamples } = usePollingData<BloatSample[]>(
+    api.bloat,
+    [],
+    3_600_000,
+  );
   const { data: partitions } = usePollingData<PartitionSlice[]>(
     api.partitions,
     [],
@@ -991,6 +1064,7 @@ function App() {
         <TopQueriesPanel queries={topQueries} />
         <StaleStatsPanel rows={staleStats} />
         <StoragePanel rows={storage} />
+        <BloatPanel samples={bloatSamples} />
         <UnusedIndexPanel indexes={unusedIndexes} />
         <PartitionPanel slices={partitions} />
       </main>
