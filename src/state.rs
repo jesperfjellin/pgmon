@@ -15,6 +15,7 @@ pub struct AppSnapshots {
     pub storage: Vec<StorageEntry>,
     pub stale_stats: Vec<StaleStatEntry>,
     pub unused_indexes: Vec<UnusedIndexEntry>,
+    pub bloat_samples: Vec<BloatSample>,
     pub partitions: Vec<PartitionSlice>,
     pub replication: Vec<ReplicaLag>,
     pub wraparound: WraparoundSnapshot,
@@ -29,6 +30,7 @@ impl Default for AppSnapshots {
             storage: Vec::new(),
             stale_stats: Vec::new(),
             unused_indexes: Vec::new(),
+            bloat_samples: Vec::new(),
             partitions: Vec::new(),
             replication: Vec::new(),
             wraparound: WraparoundSnapshot::default(),
@@ -140,6 +142,14 @@ pub struct StorageEntry {
     pub reltuples: Option<f64>,
     pub dead_tuples: Option<i64>,
     pub estimated_bloat_bytes: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BloatSample {
+    pub relation: String,
+    pub table_bytes: i64,
+    pub free_bytes: i64,
+    pub free_percent: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -481,6 +491,11 @@ impl SharedState {
     pub async fn update_unused_indexes(&self, rows: Vec<UnusedIndexEntry>) {
         let mut guard = self.inner.snapshots.write().await;
         guard.unused_indexes = rows;
+    }
+
+    pub async fn update_bloat_samples(&self, rows: Vec<BloatSample>) {
+        let mut guard = self.inner.snapshots.write().await;
+        guard.bloat_samples = rows;
     }
 
     pub async fn update_stale_stats(&self, rows: Vec<StaleStatEntry>) {
