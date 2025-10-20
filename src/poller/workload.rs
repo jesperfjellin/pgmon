@@ -7,10 +7,22 @@ use tracing::{instrument, warn};
 
 use crate::app::AppContext;
 use crate::metrics::{AlertKind, AlertSeverity, dead_tuple_alert};
-use crate::poller::util::{is_missing_column, is_missing_pg_stat_statements, is_missing_relation};
+use crate::poller::util::{is_missing_pg_stat_statements, is_missing_relation};
 use crate::state::{AutovacuumEntry, TopQueryEntry, WorkloadSample, WorkloadSummary};
 
 static PG_STAT_MONITOR_MISSING: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Default)]
+struct LatencyPercentiles {
+    p95_ms: Option<f64>,
+    p99_ms: Option<f64>,
+}
+
+struct HistogramConfig {
+    min: f64,
+    max: f64,
+    buckets: usize,
+}
 
 #[instrument(skip_all)]
 pub async fn run(ctx: &AppContext) -> Result<()> {
@@ -102,15 +114,17 @@ async fn update_workload_overview(ctx: &AppContext) -> Result<()> {
     };
 
     if let Some(mut summary) = ctx.state.record_workload_sample(sample).await {
-        let latency_p95_ms = fetch_latency_p95(ctx).await;
-        summary.latency_p95_ms = latency_p95_ms;
+        let latency = fetch_latency_percentiles(ctx).await;
+        summary.latency_p95_ms = latency.p95_ms;
+        summary.latency_p99_ms = latency.p99_ms;
 
         ctx.state
             .update_overview_with(|overview| {
                 overview.tps = summary.tps;
                 overview.qps = summary.qps;
                 overview.mean_latency_ms = summary.mean_latency_ms;
-                overview.latency_p95_ms = latency_p95_ms;
+                overview.latency_p95_ms = latency.p95_ms;
+                overview.latency_p99_ms = latency.p99_ms;
                 overview.wal_bytes_per_second = summary.wal_bytes_per_second;
                 overview.checkpoints_timed = summary.checkpoints_timed_total;
                 overview.checkpoints_requested = summary.checkpoints_requested_total;
@@ -133,7 +147,8 @@ async fn update_workload_overview(ctx: &AppContext) -> Result<()> {
             summary.checkpoint_requested_ratio,
             summary.checkpoint_mean_interval_seconds,
             summary.temp_bytes_per_second,
-            latency_p95_ms,
+            latency.p95_ms,
+            latency.p99_ms,
         );
 
         emit_wal_temp_alerts(ctx, &summary).await;
@@ -391,53 +406,189 @@ fn format_seconds(sec: f64) -> String {
     }
 }
 
-async fn fetch_latency_p95(ctx: &AppContext) -> Option<f64> {
-    const COLUMNS: &[(&str, f64)] = &[("resp_percentile_95", 1_000.0), ("resp_p95_time", 1_000.0)];
-
-    let mut missing = false;
-
-    for (column, divisor) in COLUMNS {
-        let sql = format!("SELECT MAX({}) AS p95 FROM pg_stat_monitor", column);
-        match sqlx::query(&sql).fetch_one(&ctx.pool).await {
-            Ok(row) => match row.try_get::<Option<f64>, _>("p95") {
-                Ok(Some(value)) => {
-                    PG_STAT_MONITOR_MISSING.store(false, Ordering::Relaxed);
-                    return Some(value / divisor);
-                }
-                Ok(None) => {
-                    PG_STAT_MONITOR_MISSING.store(false, Ordering::Relaxed);
-                    return None;
-                }
-                Err(err) => {
-                    warn!(error = ?err, column, "failed to read column from pg_stat_monitor");
-                    return None;
-                }
-            },
-            Err(sqlx::Error::Database(db_err)) => {
-                let error = db_err.as_ref();
-                if is_missing_relation(error) {
-                    missing = true;
-                    break;
-                }
-                if is_missing_column(error) {
-                    missing = true;
-                    continue;
-                }
-                warn!(error = %error, column, "pg_stat_monitor query failed");
-                return None;
+async fn fetch_latency_percentiles(ctx: &AppContext) -> LatencyPercentiles {
+    match compute_latency_percentiles(ctx).await {
+        Ok(Some(percentiles)) => {
+            PG_STAT_MONITOR_MISSING.store(false, Ordering::Relaxed);
+            percentiles
+        }
+        Ok(None) => {
+            if !PG_STAT_MONITOR_MISSING.swap(true, Ordering::Relaxed) {
+                warn!("pg_stat_monitor histogram unavailable; latency p95/p99 disabled");
             }
-            Err(err) => {
-                warn!(error = ?err, column, "failed to query pg_stat_monitor for latency p95");
-                return None;
+            LatencyPercentiles::default()
+        }
+        Err(err) => {
+            warn!(
+                error = ?err,
+                "failed to derive pg_stat_monitor latency percentiles"
+            );
+            LatencyPercentiles::default()
+        }
+    }
+}
+
+async fn compute_latency_percentiles(ctx: &AppContext) -> Result<Option<LatencyPercentiles>> {
+    let Some(config) = load_histogram_config(ctx).await? else {
+        return Ok(None);
+    };
+
+    let (counts, total) = match aggregate_histogram_counts(ctx, config.buckets).await {
+        Ok(result) => result,
+        Err(sqlx::Error::Database(db_err)) => {
+            if is_missing_relation(db_err.as_ref()) {
+                return Ok(None);
+            }
+            return Err(db_err.into());
+        }
+        Err(err) => return Err(err.into()),
+    };
+    if total <= 0.0 {
+        return Ok(None);
+    }
+
+    let percentiles = derive_percentiles(&config, &counts, total);
+    if percentiles.p95_ms.is_some() || percentiles.p99_ms.is_some() {
+        Ok(Some(percentiles))
+    } else {
+        Ok(None)
+    }
+}
+
+async fn load_histogram_config(ctx: &AppContext) -> Result<Option<HistogramConfig>> {
+    let rows = sqlx::query(
+        r#"
+        SELECT name, setting
+        FROM pg_settings
+        WHERE name IN (
+            'pg_stat_monitor.pgsm_histogram_min',
+            'pg_stat_monitor.pgsm_histogram_max',
+            'pg_stat_monitor.pgsm_histogram_buckets'
+        )
+        "#,
+    )
+    .fetch_all(&ctx.pool)
+    .await?;
+
+    let mut min = None;
+    let mut max = None;
+    let mut buckets = None;
+
+    for row in rows {
+        let name: String = row.try_get("name")?;
+        let setting: String = row.try_get("setting")?;
+        match name.as_str() {
+            "pg_stat_monitor.pgsm_histogram_min" => {
+                if let Ok(value) = setting.parse::<f64>() {
+                    min = Some(value);
+                }
+            }
+            "pg_stat_monitor.pgsm_histogram_max" => {
+                if let Ok(value) = setting.parse::<f64>() {
+                    max = Some(value);
+                }
+            }
+            "pg_stat_monitor.pgsm_histogram_buckets" => {
+                if let Ok(value) = setting.parse::<usize>() {
+                    buckets = Some(value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    match (min, max, buckets) {
+        (Some(min), Some(max), Some(buckets)) if buckets > 0 && max > min => {
+            Ok(Some(HistogramConfig { min, max, buckets }))
+        }
+        _ => Ok(None),
+    }
+}
+
+async fn aggregate_histogram_counts(
+    ctx: &AppContext,
+    initial_buckets: usize,
+) -> sqlx::Result<(Vec<f64>, f64)> {
+    let mut counts = vec![0.0; initial_buckets];
+    let mut total = 0.0;
+
+    let rows = sqlx::query(
+        r#"
+        SELECT resp_calls
+        FROM pg_stat_monitor
+        WHERE resp_calls IS NOT NULL
+        "#,
+    )
+    .fetch_all(&ctx.pool)
+    .await?;
+
+    for row in rows {
+        let resp_calls: Option<Vec<Option<String>>> = row.try_get("resp_calls")?;
+        let Some(resp_calls) = resp_calls else {
+            continue;
+        };
+
+        for (idx, value) in resp_calls.into_iter().enumerate() {
+            let Some(value) = value else {
+                continue;
+            };
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(count) = trimmed.parse::<f64>() {
+                if idx >= counts.len() {
+                    counts.resize(idx + 1, 0.0);
+                }
+                counts[idx] += count;
+                total += count;
             }
         }
     }
 
-    if missing && !PG_STAT_MONITOR_MISSING.swap(true, Ordering::Relaxed) {
-        warn!("pg_stat_monitor missing p95 columns; latency p95 disabled");
+    Ok((counts, total))
+}
+
+fn derive_percentiles(config: &HistogramConfig, counts: &[f64], total: f64) -> LatencyPercentiles {
+    if total <= 0.0 {
+        return LatencyPercentiles::default();
     }
 
-    None
+    let bucket_width = (config.max - config.min) / config.buckets as f64;
+    if !bucket_width.is_finite() || bucket_width <= 0.0 {
+        return LatencyPercentiles::default();
+    }
+
+    let mut cumulative = 0.0;
+    let mut p95_ms = None;
+    let mut p99_ms = None;
+
+    for (idx, count) in counts.iter().enumerate() {
+        let count = *count;
+        if count <= 0.0 {
+            continue;
+        }
+
+        cumulative += count;
+        let share = cumulative / total;
+        let upper_bound = if idx < config.buckets {
+            config.min + bucket_width * (idx as f64 + 1.0)
+        } else {
+            config.max
+        };
+        // histogram bounds are recorded in microseconds; normalise to milliseconds
+        let upper_bound_ms = upper_bound / 1_000.0;
+
+        if p95_ms.is_none() && share >= 0.95 {
+            p95_ms = Some(upper_bound_ms);
+        }
+        if p99_ms.is_none() && share >= 0.99 {
+            p99_ms = Some(upper_bound_ms);
+            break;
+        }
+    }
+
+    LatencyPercentiles { p95_ms, p99_ms }
 }
 
 async fn update_autovacuum(ctx: &AppContext) -> Result<()> {

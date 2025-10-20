@@ -53,6 +53,7 @@ pub struct OverviewSnapshot {
     pub qps: Option<f64>,
     pub mean_latency_ms: Option<f64>,
     pub latency_p95_ms: Option<f64>,
+    pub latency_p99_ms: Option<f64>,
     pub wal_bytes_per_second: Option<f64>,
     pub checkpoints_timed: Option<i64>,
     pub checkpoints_requested: Option<i64>,
@@ -78,6 +79,7 @@ impl Default for OverviewSnapshot {
             qps: None,
             mean_latency_ms: None,
             latency_p95_ms: None,
+            latency_p99_ms: None,
             wal_bytes_per_second: None,
             checkpoints_timed: None,
             checkpoints_requested: None,
@@ -250,6 +252,7 @@ pub struct WorkloadSummary {
     pub qps: Option<f64>,
     pub mean_latency_ms: Option<f64>,
     pub latency_p95_ms: Option<f64>,
+    pub latency_p99_ms: Option<f64>,
     pub wal_bytes_total: Option<i64>,
     pub wal_bytes_per_second: Option<f64>,
     pub temp_bytes_total: Option<i64>,
@@ -343,6 +346,7 @@ impl WorkloadSummary {
             qps,
             mean_latency_ms,
             latency_p95_ms: None,
+            latency_p99_ms: None,
             wal_bytes_total: current.wal_bytes,
             wal_bytes_per_second,
             temp_bytes_total: current.temp_bytes,
@@ -398,6 +402,7 @@ mod tests {
         assert!((summary.qps.expect("qps") - 5.0).abs() < 1e-6);
         assert!((summary.mean_latency_ms.expect("lat") - 10.0).abs() < 1e-6);
         assert!(summary.latency_p95_ms.is_none());
+        assert!(summary.latency_p99_ms.is_none());
         assert_eq!(summary.wal_bytes_total, Some(1_600));
         assert!((summary.wal_bytes_per_second.expect("wal rate") - 10.0).abs() < 1e-6);
         assert_eq!(summary.temp_bytes_total, Some(16_000));

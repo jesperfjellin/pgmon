@@ -98,8 +98,8 @@ All metrics include `{cluster,db}` unless noted.
 * **Transactions:**
   `pg_tps` (gauge via delta), `pg_qps`
 * **Latency (overall):**
-  `pg_query_latency_seconds_mean`, `pg_query_latency_seconds_p95`
-  *(`p95` requires `pg_stat_monitor`; falls back to `None` otherwise.)*
+  `pg_query_latency_seconds_mean`, `pg_query_latency_seconds_p95`, `pg_query_latency_seconds_p99`
+  *(`p95/p99` require `pg_stat_monitor` histogram data; metrics fall back to `None` otherwise.)*
 * **Statements (per top query):**
   `pg_stmt_calls_total{queryid}`, `pg_stmt_time_seconds_total{queryid}`,
   `pg_stmt_shared_blks_read_total{queryid}`
@@ -505,7 +505,7 @@ cargo run -- --config pgmon.yaml
 - **Workload loop (60s):**
   - Aggregates cluster TPS/QPS, mean latency (pg_stat_statements), WAL bytes, checkpoints.
   - Top queries (queryid keyed) and autovacuum freshness table.
-  - Publishes workload gauges (`pg_tps`, `pg_qps`, `pg_query_latency_seconds_mean`, `pg_wal_*`, `pg_checkpoints_*`) and autovacuum tables + metrics (`pg_table_dead_tuples`, `pg_table_pct_dead`, `pg_table_last_auto*`).
+  - Publishes workload gauges (`pg_tps`, `pg_qps`, `pg_query_latency_seconds_mean`, `pg_query_latency_seconds_p95`, `pg_query_latency_seconds_p99`, `pg_wal_*`, `pg_checkpoints_*`) and autovacuum tables + metrics (`pg_table_dead_tuples`, `pg_table_pct_dead`, `pg_table_last_auto*`).
   - Exposed through `/api/v1/overview`, `/api/v1/top-queries`, and Prometheus (`pg_stmt_*`).
 - **Storage loop (10m):**
   - Top relations by size with heap/index/TOAST split, dead tuple %, and index scan counters.

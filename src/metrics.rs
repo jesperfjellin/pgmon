@@ -157,6 +157,7 @@ impl AppMetrics {
         checkpoint_mean_interval_seconds: Option<f64>,
         temp_bytes_per_second: Option<f64>,
         latency_p95_ms: Option<f64>,
+        latency_p99_ms: Option<f64>,
     ) {
         set_optional_gauge(&self.workload.tps, cluster, tps);
         set_optional_gauge(&self.workload.qps, cluster, qps);
@@ -171,6 +172,12 @@ impl AppMetrics {
             &self.workload.latency_seconds_p95,
             cluster,
             latency_p95_seconds,
+        );
+        let latency_p99_seconds = latency_p99_ms.map(|ms| ms / 1_000.0);
+        set_optional_gauge(
+            &self.workload.latency_seconds_p99,
+            cluster,
+            latency_p99_seconds,
         );
         set_optional_int_gauge(&self.workload.wal_bytes_total, cluster, wal_bytes_total);
         set_optional_gauge(
@@ -653,6 +660,7 @@ struct WorkloadMetrics {
     qps: GaugeVec,
     mean_latency_seconds: GaugeVec,
     latency_seconds_p95: GaugeVec,
+    latency_seconds_p99: GaugeVec,
     wal_bytes_total: IntGaugeVec,
     wal_bytes_per_second: GaugeVec,
     checkpoints_timed_total: IntGaugeVec,
@@ -687,6 +695,15 @@ impl WorkloadMetrics {
             &["cluster"],
         )?;
         registry.register(Box::new(latency_seconds_p95.clone()))?;
+
+        let latency_seconds_p99 = GaugeVec::new(
+            Opts::new(
+                "pg_query_latency_seconds_p99",
+                "99th percentile query latency derived from pg_stat_monitor when available",
+            ),
+            &["cluster"],
+        )?;
+        registry.register(Box::new(latency_seconds_p99.clone()))?;
 
         let wal_bytes_total = IntGaugeVec::new(
             Opts::new("pg_wal_bytes_written_total", "Total WAL bytes written"),
@@ -750,6 +767,7 @@ impl WorkloadMetrics {
             qps,
             mean_latency_seconds,
             latency_seconds_p95,
+            latency_seconds_p99,
             wal_bytes_total,
             wal_bytes_per_second,
             checkpoints_timed_total,
