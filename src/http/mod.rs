@@ -25,6 +25,7 @@ pub fn create_router(ctx: AppContext) -> Router {
         .route("/autovacuum", get(get_autovacuum))
         .route("/top-queries", get(get_top_queries))
         .route("/storage", get(get_storage))
+        .route("/bloat", get(get_bloat))
         .route("/unused-indexes", get(get_unused_indexes))
         .route("/stale-stats", get(get_stale_stats))
         .route("/partitions", get(get_partitions))
@@ -86,6 +87,11 @@ async fn get_top_queries(State(ctx): State<AppContext>) -> Json<Vec<crate::state
 async fn get_storage(State(ctx): State<AppContext>) -> Json<Vec<crate::state::StorageEntry>> {
     let snapshots = ctx.state.get_snapshots().await;
     Json(snapshots.storage)
+}
+
+async fn get_bloat(State(ctx): State<AppContext>) -> Json<Vec<crate::state::BloatSample>> {
+    let snapshots = ctx.state.get_snapshots().await;
+    Json(snapshots.bloat_samples)
 }
 
 async fn get_unused_indexes(
