@@ -43,6 +43,9 @@ function formatSeconds(value?: number | null) {
   if (value === undefined || value === null || value < 0) {
     return "–";
   }
+  if (value >= 86_400) {
+    return `${(value / 86_400).toFixed(1)}d`;
+  }
   if (value < 60) {
     return `${value.toFixed(0)}s`;
   }
@@ -78,6 +81,26 @@ function formatRelativeTimestamp(value?: number | null) {
   }
   const diffDays = Math.round(diffHours / 24);
   return formatter.format(diffDays, "day");
+}
+
+function formatRange(
+  start?: number | null,
+  end?: number | null,
+): string {
+  const startText =
+    start === undefined || start === null ? null : formatRelativeTimestamp(start);
+  const endText =
+    end === undefined || end === null ? null : formatRelativeTimestamp(end);
+  if (startText && endText) {
+    return `${startText} → ${endText}`;
+  }
+  if (startText) {
+    return startText;
+  }
+  if (endText) {
+    return endText;
+  }
+  return "–";
 }
 
 function warnClass(condition: boolean, crit = false) {
@@ -460,6 +483,14 @@ function OverviewPanel({
           value={
             overview.latency_p95_ms
               ? `${overview.latency_p95_ms.toFixed(1)} ms`
+              : "–"
+          }
+        />
+        <MetricCard
+          label="P99 Latency"
+          value={
+            overview.latency_p99_ms
+              ? `${overview.latency_p99_ms.toFixed(1)} ms`
               : "–"
           }
         />
@@ -879,8 +910,8 @@ function PartitionPanel({ slices }: { slices: PartitionSlice[] }) {
     <div className="panel wide">
       <h2>Partition Horizon</h2>
       <p className="muted">
-        Retention advisor recommendations (period/DDL) are planned; this view tracks horizon
-        coverage and upcoming gaps only.
+        Cadence and suggested ranges are derived from recent partitions; review before applying
+        DDL in production.
       </p>
       {atRisk.length > 0 ? (
         <div className="alert-list">
@@ -890,6 +921,12 @@ function PartitionPanel({ slices }: { slices: PartitionSlice[] }) {
               <li key={`gap-${slice.parent}`} className="alert alert--warn">
                 {slice.parent}: gap {formatSeconds(slice.future_gap_seconds)} ·
                 next due {formatRelativeTimestamp(slice.next_expected_partition)}
+                {slice.advisory_note ? (
+                  <>
+                    {" "}
+                    <span className="muted">— {slice.advisory_note}</span>
+                  </>
+                ) : null}
               </li>
             ))}
           </ul>
@@ -908,9 +945,11 @@ function PartitionPanel({ slices }: { slices: PartitionSlice[] }) {
               <th>Oldest Start</th>
               <th>Latest Partition</th>
               <th>Upper Bound</th>
-              <th>Next Expected</th>
+              <th>Cadence</th>
+              <th>Suggested Range</th>
               <th>Gap</th>
               <th>Status</th>
+              <th>Guidance</th>
             </tr>
           </thead>
           <tbody>
@@ -929,12 +968,21 @@ function PartitionPanel({ slices }: { slices: PartitionSlice[] }) {
                 <td>
                   {formatRelativeTimestamp(slice.latest_partition_upper)}
                 </td>
-                <td>{formatRelativeTimestamp(slice.next_expected_partition)}</td>
+                <td>{formatSeconds(slice.cadence_seconds)}</td>
+                <td>
+                  {formatRange(
+                    slice.suggested_next_start,
+                    slice.suggested_next_end,
+                  )}
+                </td>
                 <td>{formatSeconds(slice.future_gap_seconds)}</td>
                 <td>
                   <span className={warnClass(slice.missing_future_partition)}>
                     {slice.missing_future_partition ? "At Risk" : "Healthy"}
                   </span>
+                </td>
+                <td className="muted">
+                  {slice.advisory_note ?? "–"}
                 </td>
               </tr>
             ))}

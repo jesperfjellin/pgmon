@@ -82,7 +82,7 @@
 
 **Hourly loop (<60 s):**
 
-* Lightweight bloat estimate (size vs tuples; sample `pgstattuple` on Top-N) *(planned)*
+* Lightweight bloat estimate (size vs tuples; sample `pgstattuple` on Top-N)
 * Wraparound safety (`age(datfrozenxid)`, worst `relfrozenxid`) with warn/crit alerts
 * Bloat sampling via `pgstattuple_approx` (top relations)
 * Stale stats (time since last analyze)
@@ -205,7 +205,7 @@ Each alert has: **expr**, **for**, **severity**, **message**, **dedupe key**.
 * `GET /api/v1/bloat` — sampled `pgstattuple_approx` output (table bytes, free bytes/%) for top relations (requires `pgstattuple` extension).
 * `GET /api/v1/unused-indexes` — indexes with `idx_scan = 0` and size ≥ 100 MiB (relation/index name, bytes).
 * `GET /api/v1/stale-stats` — tables whose statistics are older than alert thresholds.
-* `GET /api/v1/partitions` — inventory by parent; oldest/newest; latest upper bound; gap seconds; retention/future holes.
+* `GET /api/v1/partitions` — inventory by parent; oldest/newest; latest upper bound; cadence seconds; suggested next range; gap seconds; retention/future holes.
 * `GET /api/v1/replication` — per-replica lag.
 * `GET /api/v1/wraparound` — worst database/table wraparound ages.
 * `GET /` — minimal UI (Overview, Autovacuum, Top Queries, Stale Stats, Storage/Idx, Partitions, Replication) served from the React/Vite bundle (`frontend/dist`). Each panel shows **SQL used** (collapsible) for transparency.
@@ -252,8 +252,8 @@ alerts:
   checkpoint_interval_warn_seconds: 300
   checkpoint_interval_crit_seconds: 180
 notifiers:
-  slack_webhook: ""   # optional
-  email_smtp: ""      # optional
+  slack_webhook: ""   # optional, not a priority
+  email_smtp: ""      # optional, not a priority
 http:
   bind: "0.0.0.0:8181"
   static_dir: "/opt/pgmon/ui"
@@ -515,7 +515,7 @@ cargo run -- --config pgmon.yaml
   - Replication lag (seconds/bytes) per replica, wraparound ages for databases + relations, partition inventory snapshot.
   - Stale-stat detection (time since analyze).
   - Metrics exported via `pg_replication_lag_seconds/bytes`, `pg_wraparound_database_tx_age`, `pg_wraparound_relation_tx_age`, `pg_table_stats_stale_seconds`.
-- **Partition inventory:** aggregated per-parent summary including child count, oldest/newest partition bounds (RFC3339 where available), latest upper bound, latest partition name, derived `future_gap_seconds`, and a `missing_future_partition` flag when coverage stops before `now + horizon`. Served via `/api/v1/partitions`, exported via `pg_partition_missing_future` / `pg_partition_future_gap_seconds`, and emits warn-level overview alerts plus `alerts_total{partition_gap}` when gaps persist. (Upcoming work: retention advisor guidance for period/DDL suggestions—documented here for roadmap visibility.)
+- **Partition inventory:** aggregated per-parent summary including child count, oldest/newest partition bounds (RFC3339 where available), latest upper bound, latest partition name, derived `future_gap_seconds`, cadence estimation, and recommended next partition range. Served via `/api/v1/partitions`, exported via `pg_partition_missing_future` / `pg_partition_future_gap_seconds`, and emits warn-level alerts plus `alerts_total{partition_gap}` when gaps persist.
 - **REST API:** `/api/v1/overview`, `/autovacuum`, `/top-queries`, `/storage`, `/stale-stats`, `/partitions`, `/replication`, `/wraparound` serve current snapshots. Static UI served from `http.static_dir`.
 - **Prometheus exporter:** `/metrics` renders all self-metrics plus collected gauges/counters; loop health histograms/counters track scrape duration, success, and errors (`pgmon_*`).
 - **Autovacuum backlog alerts:** dead tuples exceeding README thresholds emit overview warn/crit entries and maintain `pg_dead_tuple_backlog_alert{cluster,relation,severity}` (1=warn/2=crit).
@@ -539,6 +539,62 @@ The remaining work items from the spec (alert engines, notifier plumbing, fronte
 
 ---
 
+## 13) Postgres Catalog Cheat Sheet
+
+A quick reference for the upstream views/functions the pollers rely on. See the official PostgreSQL docs for full schemas; below are the columns we consume today.
+
+### `pg_stat_monitor` (extension ≥ 2.2.0)
+
+* **Latency histogram:** `resp_calls[]` (text array where each element is the bucket frequency) and the set-returning function `histogram(bucket int, queryid text)` returning `(range text, freq int, bar text)`.
+* **Histogram GUCs:** `pg_stat_monitor.pgsm_histogram_min`, `pg_stat_monitor.pgsm_histogram_max`, `pg_stat_monitor.pgsm_histogram_buckets` (fetched via `pg_settings` to derive bucket widths).
+* **Other fields in use:** `bucket`, `bucket_start_time`, `queryid`, `calls`, `total_exec_time`, `mean_exec_time`, `shared_blks_read`, `wal_bytes`.
+* **Percentiles:** Calculated client-side from histogram buckets (we no longer expect `resp_percentile_*` columns).
+
+### `pg_stat_statements`
+
+* `queryid`, `calls`, `total_exec_time`, `mean_exec_time`, `shared_blks_read` power the top-query table and mean latency baseline.
+
+### `pg_stat_progress_vacuum`
+
+* `relid`, `phase`, `heap_blks_scanned`, `heap_blks_total` feed the autovacuum progress snapshot.
+
+### `pg_stat_database`
+
+* `xact_commit`, `xact_rollback`, `temp_files`, `temp_bytes` drive TPS/QPS and temp spill deltas.
+
+### `pg_stat_wal` (PG14+)
+
+* `wal_bytes`, `wal_records`, `wal_fpi` for WAL throughput metrics.
+
+### `pg_stat_checkpointer`
+
+* `num_timed`, `num_requested`, `last_restartpoint` for checkpoint ratios and intervals.
+
+### `pg_stat_activity` & `pg_locks`
+
+* `pid`, `datname`, `usename`, `state`, `query_start`, `wait_event_type`, `blocked_by` (derived) for session/lock diagnostics.
+
+### `pg_stat_user_tables` & `pg_stat_user_indexes`
+
+* Table/index sizes (`pg_relation_size`, `pg_total_relation_size`), `n_live_tup`, `n_dead_tup`, `last_autovacuum`, `last_autoanalyze`.
+
+### `pg_stat_replication`
+
+* `application_name`, `state`, `write_lag`, `flush_lag`, `replay_lag`, `write_lsn`, `replay_lsn` for replica status.
+
+### `pg_inherits`
+
+* `inhparent`, `inhrelid` to enumerate partition children; combined with `pg_class.relname` and `pg_range` (if available) for bounds.
+
+### Wraparound views
+
+* Database risk: `age(datfrozenxid)` via `pg_database`.
+* Relation risk: `age(relfrozenxid)` via `pg_class` joined with `pg_stat_user_tables`.
+
+Keep this section updated when pollers adopt new columns or extensions so contributors know which upstream changes might break us.
+
+---
+
 ## 13) MVP Milestones (build order)
 
 1. **Startup guardrails** (`pg_stat_statements` check) + `/healthz`
@@ -546,7 +602,7 @@ The remaining work items from the spec (alert engines, notifier plumbing, fronte
 3. **60s loop** (statements, WAL/bgwriter, replication, freshness)
 4. **5–10m loop** (sizes, dead/live, index usage, partitions)
 5. **Hourly** (wraparound, stale stats)
-6. **Alerts** (internal engine + Slack/Email)
+6. **Alerts** (internal engine + Slack/Email) - not prioritized
 7. **Minimal UI** (Overview, Autovacuum, Top queries, Storage/Idx, Partitions, Replication)
 8. **Prometheus parity** (all surfaced metrics exported 1:1)
 

@@ -185,8 +185,14 @@ pub struct PartitionSlice {
     pub latest_partition_name: Option<String>,
     #[serde(with = "chrono::serde::ts_seconds_option")]
     pub next_expected_partition: Option<DateTime<Utc>>,
+    pub cadence_seconds: Option<i64>,
+    #[serde(with = "chrono::serde::ts_seconds_option")]
+    pub suggested_next_start: Option<DateTime<Utc>>,
+    #[serde(with = "chrono::serde::ts_seconds_option")]
+    pub suggested_next_end: Option<DateTime<Utc>>,
     pub missing_future_partition: bool,
     pub future_gap_seconds: Option<i64>,
+    pub advisory_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

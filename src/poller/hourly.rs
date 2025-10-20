@@ -82,6 +82,7 @@ async fn update_partitions(ctx: &AppContext) -> Result<()> {
         newest_start: Option<DateTime<Utc>>,
         latest_upper: Option<DateTime<Utc>>,
         latest_partition_name: Option<String>,
+        starts: Vec<DateTime<Utc>>,
     }
 
     let mut acc: HashMap<String, PartitionAccumulator> = HashMap::new();
@@ -98,14 +99,16 @@ async fn update_partitions(ctx: &AppContext) -> Result<()> {
             let (lower, upper) = parse_partition_bounds(&bounds);
 
             if let Some(lower) = lower {
-                match accumulator.oldest_start {
-                    Some(existing) if lower >= existing => {}
-                    _ => accumulator.oldest_start = Some(lower),
-                }
-
-                match accumulator.newest_start {
-                    Some(existing) if lower <= existing => {}
-                    _ => accumulator.newest_start = Some(lower),
+                accumulator.starts.push(lower);
+                if let Some(lower_value) = accumulator.starts.last().cloned() {
+                    match accumulator.oldest_start {
+                        Some(existing) if lower_value >= existing => {}
+                        _ => accumulator.oldest_start = Some(lower_value.clone()),
+                    }
+                    match accumulator.newest_start {
+                        Some(existing) if lower_value <= existing => {}
+                        _ => accumulator.newest_start = Some(lower_value),
+                    }
                 }
             }
 
@@ -133,7 +136,15 @@ async fn update_partitions(ctx: &AppContext) -> Result<()> {
             newest_start,
             latest_upper,
             latest_partition_name,
+            starts,
         } = data;
+
+        let cadence_seconds = compute_cadence_seconds(&starts);
+        let suggested_next_start = latest_upper;
+        let suggested_next_end = match (latest_upper, cadence_seconds) {
+            (Some(upper), Some(cadence)) => Some(upper + chrono::Duration::seconds(cadence)),
+            _ => None,
+        };
 
         let (missing_future, future_gap_seconds, next_expected, latest_upper_bound) =
             if let Some(upper) = latest_upper {
@@ -143,16 +154,13 @@ async fn update_partitions(ctx: &AppContext) -> Result<()> {
                 } else {
                     None
                 };
-                let next_candidate = upper + horizon;
-                let next = if next_candidate > now {
-                    Some(next_candidate)
-                } else {
-                    None
-                };
-                (missing, gap, next, Some(upper))
+                (missing, gap, suggested_next_start, Some(upper))
             } else {
                 (false, None, None, None)
             };
+
+        let advisory_note =
+            build_partition_advice(cadence_seconds, suggested_next_start, suggested_next_end);
 
         summaries.push(PartitionSlice {
             parent,
@@ -162,8 +170,12 @@ async fn update_partitions(ctx: &AppContext) -> Result<()> {
             latest_partition_upper: latest_upper_bound,
             latest_partition_name,
             next_expected_partition: next_expected,
+            cadence_seconds,
+            suggested_next_start,
+            suggested_next_end,
             missing_future_partition: missing_future,
             future_gap_seconds,
+            advisory_note,
         });
     }
 
@@ -613,6 +625,91 @@ fn filter_wraparound_snapshot(snapshot: WraparoundSnapshot) -> WraparoundSnapsho
     }
 }
 
+fn compute_cadence_seconds(starts: &[DateTime<Utc>]) -> Option<i64> {
+    if starts.len() < 2 {
+        return None;
+    }
+
+    let mut sorted = starts.to_vec();
+    sorted.sort();
+
+    let mut diffs: Vec<i64> = sorted
+        .windows(2)
+        .filter_map(|window| {
+            let delta = (window[1] - window[0]).num_seconds();
+            if delta > 0 { Some(delta) } else { None }
+        })
+        .collect();
+
+    if diffs.is_empty() {
+        return None;
+    }
+
+    diffs.sort();
+
+    let mut best_value = diffs[0];
+    let mut best_count = 1;
+    let mut current_value = diffs[0];
+    let mut current_count = 1;
+
+    for diff in diffs.iter().skip(1) {
+        if *diff == current_value {
+            current_count += 1;
+        } else {
+            if current_count > best_count {
+                best_value = current_value;
+                best_count = current_count;
+            }
+            current_value = *diff;
+            current_count = 1;
+        }
+    }
+
+    if current_count > best_count {
+        best_value = current_value;
+    }
+
+    Some(best_value)
+}
+
+fn format_timestamp(ts: DateTime<Utc>) -> String {
+    ts.format("%Y-%m-%d %H:%M UTC").to_string()
+}
+
+fn format_cadence(cadence_seconds: i64) -> String {
+    if cadence_seconds >= 86_400 {
+        format!("{:.1}d", cadence_seconds as f64 / 86_400.0)
+    } else if cadence_seconds >= 3_600 {
+        format!("{:.1}h", cadence_seconds as f64 / 3_600.0)
+    } else if cadence_seconds >= 60 {
+        format!("{:.1}m", cadence_seconds as f64 / 60.0)
+    } else {
+        format!("{}s", cadence_seconds)
+    }
+}
+
+fn build_partition_advice(
+    cadence_seconds: Option<i64>,
+    suggested_start: Option<DateTime<Utc>>,
+    suggested_end: Option<DateTime<Utc>>,
+) -> Option<String> {
+    match (cadence_seconds, suggested_start, suggested_end) {
+        (Some(cadence), Some(start), Some(end)) => {
+            let cadence_str = format_cadence(cadence);
+            Some(format!(
+                "Observed ~{cadence_str} cadence; next partition should cover {} → {}.",
+                format_timestamp(start),
+                format_timestamp(end)
+            ))
+        }
+        (None, Some(start), _) => Some(format!(
+            "Latest partition ends at {}; review schedule to maintain coverage.",
+            format_timestamp(start)
+        )),
+        _ => None,
+    }
+}
+
 fn partition_alert_message(slice: &PartitionSlice) -> String {
     let next_due = slice
         .next_expected_partition
@@ -622,15 +719,25 @@ fn partition_alert_message(slice: &PartitionSlice) -> String {
 
     if let Some(gap_seconds) = slice.future_gap_seconds {
         let gap_hours = (gap_seconds as f64 / 3600.0).max(0.0);
-        format!(
+        let base = format!(
             "Partition horizon risk {}: coverage lags {:.1}h (next due {next_due})",
             slice.parent, gap_hours
-        )
+        );
+        if let Some(note) = &slice.advisory_note {
+            format!("{base} — {note}")
+        } else {
+            base
+        }
     } else {
-        format!(
+        let base = format!(
             "Partition horizon risk {}: next due {next_due}",
             slice.parent
-        )
+        );
+        if let Some(note) = &slice.advisory_note {
+            format!("{base} — {note}")
+        } else {
+            base
+        }
     }
 }
 

@@ -1359,9 +1359,13 @@ mod tests {
             newest_partition: Some(now - chrono::Duration::days(1)),
             latest_partition_upper: Some(now - chrono::Duration::hours(2)),
             latest_partition_name: Some("orders_202403".into()),
-            next_expected_partition: Some(now + chrono::Duration::days(5)),
+            next_expected_partition: Some(now - chrono::Duration::hours(2)),
+            cadence_seconds: Some(86_400),
+            suggested_next_start: Some(now - chrono::Duration::hours(2)),
+            suggested_next_end: Some(now + chrono::Duration::hours(22)),
             missing_future_partition: true,
             future_gap_seconds: Some(7_200),
+            advisory_note: Some("Observed cadence example.".into()),
         };
 
         metrics.set_partition_metrics("cluster", &[slice]);

@@ -11,6 +11,7 @@ export interface OverviewSnapshot {
   qps?: number;
   mean_latency_ms?: number;
   latency_p95_ms?: number;
+  latency_p99_ms?: number;
   wal_bytes_per_second?: number;
   checkpoints_timed?: number;
   checkpoints_requested?: number;
@@ -87,8 +88,12 @@ export interface PartitionSlice {
   latest_partition_upper?: number | null;
   latest_partition_name?: string;
   next_expected_partition?: number | null;
+  cadence_seconds?: number | null;
+  suggested_next_start?: number | null;
+  suggested_next_end?: number | null;
   missing_future_partition: boolean;
   future_gap_seconds?: number | null;
+  advisory_note?: string | null;
 }
 
 export interface WraparoundSnapshot {
