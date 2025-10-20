@@ -84,6 +84,7 @@
 
 * Lightweight bloat estimate (size vs tuples; sample `pgstattuple` on Top-N) *(planned)*
 * Wraparound safety (`age(datfrozenxid)`, worst `relfrozenxid`) with warn/crit alerts
+* Bloat sampling via `pgstattuple_approx` (top relations)
 * Stale stats (time since last analyze)
 
 ---
@@ -113,6 +114,8 @@ All metrics include `{cluster,db}` unless noted.
   `pg_table_stats_stale_seconds{relation}`
 * **Storage:**
   `pg_relation_size_bytes{relation,relkind}`, `pg_relation_table_bytes{relation,relkind}`, `pg_relation_index_bytes{relation,relkind}`, `pg_relation_toast_bytes{relation,relkind}`, `pg_relation_bloat_estimated_bytes{relation,relkind}`
+* **Bloat samples:**
+  `pg_relation_bloat_sample_free_bytes{relation}`, `pg_relation_bloat_sample_free_percent{relation}` *(requires `pgstattuple` or `pgstattuple_approx`)*
 * **Index usage:**
   `pg_index_scans_total{index}`, `pg_unused_index_bytes{index}`
 * **WAL / checkpoints:**
@@ -199,6 +202,7 @@ Each alert has: **expr**, **for**, **severity**, **message**, **dedupe key**.
 * `GET /api/v1/autovacuum` — table list: `%dead`, `dead/live`, last (auto)vacuum/analyze, hints.
 * `GET /api/v1/top-queries` — top by total_time/calls/I/O (ids + normalized sample).
 * `GET /api/v1/storage` — Top-N tables/indexes by bytes; growth snapshot.
+* `GET /api/v1/bloat` — sampled `pgstattuple_approx` output (table bytes, free bytes/%) for top relations (requires `pgstattuple` extension).
 * `GET /api/v1/unused-indexes` — indexes with `idx_scan = 0` and size ≥ 100 MiB (relation/index name, bytes).
 * `GET /api/v1/stale-stats` — tables whose statistics are older than alert thresholds.
 * `GET /api/v1/partitions` — inventory by parent; oldest/newest; latest upper bound; gap seconds; retention/future holes.
