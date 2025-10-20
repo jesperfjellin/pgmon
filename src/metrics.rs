@@ -318,11 +318,7 @@ impl AppMetrics {
         }
     }
 
-    pub fn set_bloat_sample_metrics(
-        &self,
-        cluster: &str,
-        entries: &[crate::state::BloatSample],
-    ) {
+    pub fn set_bloat_sample_metrics(&self, cluster: &str, entries: &[crate::state::BloatSample]) {
         self.bloat_samples.free_bytes.reset();
         self.bloat_samples.free_percent.reset();
 
@@ -1235,7 +1231,7 @@ impl AlertKind {
 mod tests {
     use super::*;
     use crate::state::{
-        AutovacuumEntry, PartitionSlice, StaleStatEntry, StorageEntry, TopQueryEntry,
+        AutovacuumEntry, BloatSample, PartitionSlice, StaleStatEntry, StorageEntry, TopQueryEntry,
         UnusedIndexEntry,
     };
     use chrono::Utc;
@@ -1265,6 +1261,26 @@ mod tests {
                 && (line.contains("1.048576e+06") || line.trim_end().ends_with("1048576"))
         });
         assert!(size_line.is_some(), "relation size missing: {output}");
+    }
+
+    #[test]
+    fn bloat_sample_metrics_capture_free_space() {
+        let metrics = AppMetrics::new().expect("metrics");
+        let sample = BloatSample {
+            relation: "public.foo".into(),
+            table_bytes: 1_000,
+            free_bytes: 200,
+            free_percent: 20.0,
+        };
+
+        metrics.set_bloat_sample_metrics("cluster", &[sample]);
+        let output = metrics.encode().expect("encode");
+        assert!(output.contains(
+            "pgmon_pg_relation_bloat_sample_free_bytes{cluster=\"cluster\",relation=\"public_foo\"} 200"
+        ));
+        assert!(output.contains(
+            "pgmon_pg_relation_bloat_sample_free_percent{cluster=\"cluster\",relation=\"public_foo\"} 20"
+        ));
     }
 
     #[test]

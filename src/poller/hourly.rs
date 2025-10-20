@@ -8,7 +8,7 @@ use tracing::{instrument, warn};
 
 use crate::app::AppContext;
 use crate::metrics::{AlertKind, AlertSeverity};
-use crate::poller::util::{is_missing_function, to_optional_positive};
+use crate::poller::util::{is_missing_column, is_missing_function};
 use crate::state::{
     PartitionSlice, ReplicaLag, WraparoundDatabase, WraparoundRelation, WraparoundSnapshot,
 };
@@ -53,8 +53,8 @@ WITH top_relations AS (
 SELECT
     (nspname || '.' || relname) AS relation,
     stats.table_len AS table_bytes,
-    stats.free_space AS free_bytes,
-    stats.free_percent
+    stats.approx_free_space::bigint AS free_bytes,
+    stats.approx_free_percent AS free_percent
 FROM top_relations
 JOIN LATERAL pgstattuple_approx(rel) stats ON TRUE
 ORDER BY table_bytes DESC
@@ -362,7 +362,7 @@ async fn update_bloat_samples(ctx: &AppContext) -> Result<()> {
         Ok(rows) => rows,
         Err(sqlx::Error::Database(db_err)) => {
             let err = db_err.as_ref();
-            if is_missing_function(err) {
+            if is_missing_function(err) || is_missing_column(err) {
                 if !PG_STATTUPLE_MISSING.swap(true, Ordering::Relaxed) {
                     warn!("pgstattuple_approx unavailable; bloat sampling disabled");
                 }
