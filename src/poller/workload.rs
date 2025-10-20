@@ -402,7 +402,10 @@ async fn fetch_latency_p95(ctx: &AppContext) -> Option<f64> {
     .await
     {
         Ok(row) => match row.try_get::<Option<f64>, _>("p95") {
-            Ok(value) => value,
+            Ok(value) => {
+                PG_STAT_MONITOR_MISSING.store(false, Ordering::Relaxed);
+                value
+            }
             Err(err) => {
                 warn!(error = ?err, "failed to read resp_percentile_95 from pg_stat_monitor");
                 None
