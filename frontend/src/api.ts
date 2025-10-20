@@ -50,6 +50,13 @@ export interface UnusedIndexEntry {
   bytes: number;
 }
 
+export interface BloatSample {
+  relation: string;
+  table_bytes: number;
+  free_bytes: number;
+  free_percent: number;
+}
+
 export interface TopQueryEntry {
   queryid: number;
   calls: number;
@@ -154,6 +161,7 @@ export const api = {
   autovacuum: "/api/v1/autovacuum",
   topQueries: "/api/v1/top-queries",
   unusedIndexes: "/api/v1/unused-indexes",
+  bloat: "/api/v1/bloat",
   staleStats: "/api/v1/stale-stats",
   replication: "/api/v1/replication",
   storage: "/api/v1/storage",
