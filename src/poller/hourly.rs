@@ -1,12 +1,14 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use sqlx::Row;
-use tracing::instrument;
+use tracing::{instrument, warn};
 
 use crate::app::AppContext;
 use crate::metrics::{AlertKind, AlertSeverity};
+use crate::poller::util::{is_missing_function, to_optional_positive};
 use crate::state::{
     PartitionSlice, ReplicaLag, WraparoundDatabase, WraparoundRelation, WraparoundSnapshot,
 };
@@ -35,11 +37,37 @@ SELECT
 FROM pg_stat_user_tables
 "#;
 
+const BLOAT_SAMPLE_SQL: &str = r#"
+WITH top_relations AS (
+    SELECT c.oid::regclass AS rel,
+           c.oid,
+           n.nspname,
+           c.relname
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+      AND c.relkind = 'r'
+    ORDER BY pg_total_relation_size(c.oid) DESC
+    LIMIT $1
+)
+SELECT
+    (nspname || '.' || relname) AS relation,
+    stats.table_len AS table_bytes,
+    stats.free_space AS free_bytes,
+    stats.free_percent
+FROM top_relations
+JOIN LATERAL pgstattuple_approx(rel) stats ON TRUE
+ORDER BY table_bytes DESC
+"#;
+
+static PG_STATTUPLE_MISSING: AtomicBool = AtomicBool::new(false);
+
 #[instrument(skip_all)]
 pub async fn run(ctx: &AppContext) -> Result<()> {
     update_partitions(ctx).await?;
     update_replication(ctx).await?;
     update_wraparound(ctx).await?;
+    update_bloat_samples(ctx).await?;
     update_stale_stats(ctx).await?;
     Ok(())
 }
@@ -316,6 +344,53 @@ async fn update_wraparound(ctx: &AppContext) -> Result<()> {
     );
     emit_wraparound_alerts(ctx, &filtered_snapshot).await;
     ctx.state.update_wraparound(filtered_snapshot).await;
+    Ok(())
+}
+
+async fn update_bloat_samples(ctx: &AppContext) -> Result<()> {
+    if PG_STATTUPLE_MISSING.load(Ordering::Relaxed) {
+        ctx.state.update_bloat_samples(Vec::new()).await;
+        return Ok(());
+    }
+
+    let limit = ctx.config.limits.top_relations as i64;
+    let rows = match sqlx::query(BLOAT_SAMPLE_SQL)
+        .bind(limit)
+        .fetch_all(&ctx.pool)
+        .await
+    {
+        Ok(rows) => rows,
+        Err(sqlx::Error::Database(db_err)) => {
+            let err = db_err.as_ref();
+            if is_missing_function(err) {
+                if !PG_STATTUPLE_MISSING.swap(true, Ordering::Relaxed) {
+                    warn!("pgstattuple_approx unavailable; bloat sampling disabled");
+                }
+                ctx.state.update_bloat_samples(Vec::new()).await;
+                return Ok(());
+            }
+            return Err(sqlx::Error::Database(db_err).into());
+        }
+        Err(err) => return Err(err.into()),
+    };
+
+    let mut samples = Vec::with_capacity(rows.len());
+    for row in rows {
+        let relation: String = row.try_get("relation")?;
+        let table_bytes: i64 = row.try_get("table_bytes")?;
+        let free_bytes: i64 = row.try_get("free_bytes")?;
+        let free_percent: f64 = row.try_get("free_percent")?;
+        samples.push(crate::state::BloatSample {
+            relation,
+            table_bytes,
+            free_bytes,
+            free_percent,
+        });
+    }
+
+    ctx.metrics
+        .set_bloat_sample_metrics(ctx.cluster_name(), &samples);
+    ctx.state.update_bloat_samples(samples).await;
     Ok(())
 }
 
