@@ -38,6 +38,7 @@ pub struct AppMetrics {
     stale_stats: StaleStatsMetrics,
     statements: StatementMetrics,
     partition: PartitionMetrics,
+    bloat_samples: BloatSampleMetrics,
     alert_counters: AlertCounters,
 }
 
@@ -58,6 +59,7 @@ impl AppMetrics {
         let stale_stats = StaleStatsMetrics::register(&registry)?;
         let statements = StatementMetrics::register(&registry)?;
         let partition = PartitionMetrics::register(&registry)?;
+        let bloat_samples = BloatSampleMetrics::register(&registry)?;
         let alert_counters = AlertCounters::register(&registry)?;
 
         Ok(Self {
@@ -75,6 +77,7 @@ impl AppMetrics {
             stale_stats,
             statements,
             partition,
+            bloat_samples,
             alert_counters,
         })
     }
@@ -312,6 +315,27 @@ impl AppMetrics {
                 .future_gap_seconds
                 .with_label_values(&labels)
                 .set(gap_seconds);
+        }
+    }
+
+    pub fn set_bloat_sample_metrics(
+        &self,
+        cluster: &str,
+        entries: &[crate::state::BloatSample],
+    ) {
+        self.bloat_samples.free_bytes.reset();
+        self.bloat_samples.free_percent.reset();
+
+        for entry in entries {
+            let relation = sanitize_label(&entry.relation);
+            self.bloat_samples
+                .free_bytes
+                .with_label_values(&[cluster, relation.as_str()])
+                .set(entry.free_bytes);
+            self.bloat_samples
+                .free_percent
+                .with_label_values(&[cluster, relation.as_str()])
+                .set(entry.free_percent);
         }
     }
 
@@ -1006,6 +1030,39 @@ impl PartitionMetrics {
         Ok(Self {
             missing_future,
             future_gap_seconds,
+        })
+    }
+}
+
+#[derive(Clone)]
+struct BloatSampleMetrics {
+    free_bytes: IntGaugeVec,
+    free_percent: GaugeVec,
+}
+
+impl BloatSampleMetrics {
+    fn register(registry: &Registry) -> Result<Self> {
+        let free_bytes = IntGaugeVec::new(
+            Opts::new(
+                "pg_relation_bloat_sample_free_bytes",
+                "Free space bytes reported by pgstattuple_approx",
+            ),
+            &["cluster", "relation"],
+        )?;
+        registry.register(Box::new(free_bytes.clone()))?;
+
+        let free_percent = GaugeVec::new(
+            Opts::new(
+                "pg_relation_bloat_sample_free_percent",
+                "Free space percentage reported by pgstattuple_approx",
+            ),
+            &["cluster", "relation"],
+        )?;
+        registry.register(Box::new(free_percent.clone()))?;
+
+        Ok(Self {
+            free_bytes,
+            free_percent,
         })
     }
 }
