@@ -328,17 +328,56 @@ impl AppMetrics {
     pub fn set_bloat_sample_metrics(&self, cluster: &str, entries: &[crate::state::BloatSample]) {
         self.bloat_samples.free_bytes.reset();
         self.bloat_samples.free_percent.reset();
+        self.bloat_samples.dead_tuple_count.reset();
+        self.bloat_samples.dead_tuple_percent.reset();
+        self.bloat_samples.live_tuple_count.reset();
+        self.bloat_samples.live_tuple_percent.reset();
+        self.bloat_samples.tuple_density.reset();
 
         for entry in entries {
             let relation = sanitize_label(&entry.relation);
+            let labels = [cluster, relation.as_str()];
+
             self.bloat_samples
                 .free_bytes
-                .with_label_values(&[cluster, relation.as_str()])
+                .with_label_values(&labels)
                 .set(entry.free_bytes);
             self.bloat_samples
                 .free_percent
-                .with_label_values(&[cluster, relation.as_str()])
+                .with_label_values(&labels)
                 .set(entry.free_percent);
+
+            // Set advanced metrics if available (from exact/detailed mode)
+            if let Some(count) = entry.dead_tuple_count {
+                self.bloat_samples
+                    .dead_tuple_count
+                    .with_label_values(&labels)
+                    .set(count);
+            }
+            if let Some(percent) = entry.dead_tuple_percent {
+                self.bloat_samples
+                    .dead_tuple_percent
+                    .with_label_values(&labels)
+                    .set(percent);
+            }
+            if let Some(count) = entry.live_tuple_count {
+                self.bloat_samples
+                    .live_tuple_count
+                    .with_label_values(&labels)
+                    .set(count);
+            }
+            if let Some(percent) = entry.live_tuple_percent {
+                self.bloat_samples
+                    .live_tuple_percent
+                    .with_label_values(&labels)
+                    .set(percent);
+            }
+            if let Some(density) = entry.tuple_density {
+                self.bloat_samples
+                    .tuple_density
+                    .with_label_values(&labels)
+                    .set(density);
+            }
         }
     }
 
@@ -1052,6 +1091,11 @@ impl PartitionMetrics {
 struct BloatSampleMetrics {
     free_bytes: IntGaugeVec,
     free_percent: GaugeVec,
+    dead_tuple_count: IntGaugeVec,
+    dead_tuple_percent: GaugeVec,
+    live_tuple_count: IntGaugeVec,
+    live_tuple_percent: GaugeVec,
+    tuple_density: GaugeVec,
 }
 
 impl BloatSampleMetrics {
@@ -1059,7 +1103,7 @@ impl BloatSampleMetrics {
         let free_bytes = IntGaugeVec::new(
             Opts::new(
                 "pg_relation_bloat_sample_free_bytes",
-                "Free space bytes reported by pgstattuple_approx",
+                "Free space bytes reported by pgstattuple",
             ),
             &["cluster", "relation"],
         )?;
@@ -1068,15 +1112,65 @@ impl BloatSampleMetrics {
         let free_percent = GaugeVec::new(
             Opts::new(
                 "pg_relation_bloat_sample_free_percent",
-                "Free space percentage reported by pgstattuple_approx",
+                "Free space percentage reported by pgstattuple",
             ),
             &["cluster", "relation"],
         )?;
         registry.register(Box::new(free_percent.clone()))?;
 
+        let dead_tuple_count = IntGaugeVec::new(
+            Opts::new(
+                "pg_relation_bloat_sample_dead_tuple_count",
+                "Dead tuple count from pgstattuple exact mode",
+            ),
+            &["cluster", "relation"],
+        )?;
+        registry.register(Box::new(dead_tuple_count.clone()))?;
+
+        let dead_tuple_percent = GaugeVec::new(
+            Opts::new(
+                "pg_relation_bloat_sample_dead_tuple_percent",
+                "Dead tuple percentage from pgstattuple exact mode",
+            ),
+            &["cluster", "relation"],
+        )?;
+        registry.register(Box::new(dead_tuple_percent.clone()))?;
+
+        let live_tuple_count = IntGaugeVec::new(
+            Opts::new(
+                "pg_relation_bloat_sample_live_tuple_count",
+                "Live tuple count from pgstattuple exact mode",
+            ),
+            &["cluster", "relation"],
+        )?;
+        registry.register(Box::new(live_tuple_count.clone()))?;
+
+        let live_tuple_percent = GaugeVec::new(
+            Opts::new(
+                "pg_relation_bloat_sample_live_tuple_percent",
+                "Live tuple percentage from pgstattuple exact mode",
+            ),
+            &["cluster", "relation"],
+        )?;
+        registry.register(Box::new(live_tuple_percent.clone()))?;
+
+        let tuple_density = GaugeVec::new(
+            Opts::new(
+                "pg_relation_bloat_sample_tuple_density",
+                "Tuple density percentage from pgstattuple exact mode",
+            ),
+            &["cluster", "relation"],
+        )?;
+        registry.register(Box::new(tuple_density.clone()))?;
+
         Ok(Self {
             free_bytes,
             free_percent,
+            dead_tuple_count,
+            dead_tuple_percent,
+            live_tuple_count,
+            live_tuple_percent,
+            tuple_density,
         })
     }
 }
@@ -1289,6 +1383,11 @@ mod tests {
             table_bytes: 1_000,
             free_bytes: 200,
             free_percent: 20.0,
+            dead_tuple_count: None,
+            dead_tuple_percent: None,
+            live_tuple_count: None,
+            live_tuple_percent: None,
+            tuple_density: None,
         };
 
         metrics.set_bloat_sample_metrics("cluster", &[sample]);
