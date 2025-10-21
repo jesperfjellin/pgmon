@@ -780,8 +780,9 @@ function BloatPanel({ samples }: { samples: BloatSample[] }) {
       <div className="panel">
         <h2>Bloat Samples</h2>
         <p className="muted">
-          Sampling uses `pgstattuple_approx` on the largest tables; install the extension to
-          enable precise measurements.
+          No bloat data available. Ensure <code>pgstattuple</code> extension is installed and
+          hourly loop is running. Set <code>bloat.sampling_mode: "exact"</code> for detailed tuple
+          statistics.
         </p>
         <SqlSnippet sql={SQL_SNIPPETS.bloat} />
       </div>
@@ -790,9 +791,12 @@ function BloatPanel({ samples }: { samples: BloatSample[] }) {
 
   const topSamples = useMemo(() => samples.slice(0, 20), [samples]);
 
+  // Check if any sample has advanced fields (exact mode)
+  const hasAdvancedFields = topSamples.some(s => s.dead_tuple_count != null);
+
   return (
     <div className="panel wide">
-      <h2>Bloat Samples</h2>
+      <h2>Bloat Samples {hasAdvancedFields && <span className="muted">(exact mode)</span>}</h2>
       <div className="table-scroll">
         <table>
           <thead>
@@ -801,6 +805,14 @@ function BloatPanel({ samples }: { samples: BloatSample[] }) {
               <th className="numeric">Table Bytes</th>
               <th className="numeric">Free Bytes</th>
               <th className="numeric">Free %</th>
+              {hasAdvancedFields && (
+                <>
+                  <th className="numeric">Dead Tuples</th>
+                  <th className="numeric">Dead %</th>
+                  <th className="numeric">Live Tuples</th>
+                  <th className="numeric">Tuple Density %</th>
+                </>
+              )}
             </tr>
           </thead>
           <tbody>
@@ -810,6 +822,30 @@ function BloatPanel({ samples }: { samples: BloatSample[] }) {
                 <td className="numeric">{formatBytes(sample.table_bytes)}</td>
                 <td className="numeric">{formatBytes(sample.free_bytes)}</td>
                 <td className="numeric">{sample.free_percent.toFixed(1)}%</td>
+                {hasAdvancedFields && (
+                  <>
+                    <td className="numeric">
+                      {sample.dead_tuple_count != null
+                        ? sample.dead_tuple_count.toLocaleString()
+                        : "—"}
+                    </td>
+                    <td className="numeric">
+                      {sample.dead_tuple_percent != null
+                        ? sample.dead_tuple_percent.toFixed(1) + "%"
+                        : "—"}
+                    </td>
+                    <td className="numeric">
+                      {sample.live_tuple_count != null
+                        ? sample.live_tuple_count.toLocaleString()
+                        : "—"}
+                    </td>
+                    <td className="numeric">
+                      {sample.tuple_density != null
+                        ? sample.tuple_density.toFixed(1) + "%"
+                        : "—"}
+                    </td>
+                  </>
+                )}
               </tr>
             ))}
           </tbody>

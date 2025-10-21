@@ -56,6 +56,12 @@ export interface BloatSample {
   table_bytes: number;
   free_bytes: number;
   free_percent: number;
+  // Advanced fields from pgstattuple (exact mode)
+  dead_tuple_count?: number;
+  dead_tuple_percent?: number;
+  live_tuple_count?: number;
+  live_tuple_percent?: number;
+  tuple_density?: number;
 }
 
 export interface TopQueryEntry {
