@@ -215,14 +215,151 @@ impl MetricHistory {
         }
     }
 
-    // TODO(jesperfjellin): Implement nightly aggregation job collapsing high-res points into DailyMetricSummary/WeeklyMetricSummary.
-    // Strategy outline:
-    //   1. At UTC rollover, scan each series' points for previous day, compute mean/max/min, push to daily.
-    //   2. At start of ISO week (Mon 00:00 UTC), collapse last 7 daily entries into weekly summary.
-    //   3. Enforce retention: keep 7d daily for 30d window (prune >30d), keep 52 weekly entries (~1y).
-    //   4. Persist summaries + alert_events to JSON files under PGMON_DATA_DIR for durability across restarts.
-    //   5. Provide /api/v1/history/{metric}?window=7d&rollup=daily and 30d/365d variants.
-    // NOTE: Implementation deferred until baseline high-res history proves stable under load.
+    /// Aggregate high-resolution points from yesterday into daily summaries.
+    /// Should be called after UTC midnight to process the previous day's data.
+    /// Returns the number of new daily summaries created.
+    ///
+    /// Note: Called by `poller::aggregation` via closure - dead code analysis doesn't detect this.
+    #[allow(dead_code)]
+    pub fn aggregate_to_daily(&mut self, now: DateTime<Utc>) -> usize {
+        // Calculate yesterday's date
+        let yesterday = (now - chrono::Duration::days(1)).date_naive();
+        let yesterday_str = yesterday.format("%Y-%m-%d").to_string();
+
+        // Skip if we already have a daily summary for yesterday
+        if self.daily.iter().any(|d| d.date == yesterday_str) {
+            return 0;
+        }
+
+        let mut count = 0;
+
+        // Helper to aggregate a single series
+        let aggregate_series =
+            |points: &[TimePoint], date: chrono::NaiveDate| -> Option<(f64, f64, f64)> {
+                let filtered: Vec<f64> = points
+                    .iter()
+                    .filter(|p| p.ts.date_naive() == date)
+                    .map(|p| p.value)
+                    .collect();
+
+                if filtered.is_empty() {
+                    return None;
+                }
+
+                let mean = filtered.iter().sum::<f64>() / filtered.len() as f64;
+                let max = filtered.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                let min = filtered.iter().cloned().fold(f64::INFINITY, f64::min);
+
+                Some((mean, max, min))
+            };
+
+        // Aggregate each metric series
+        if let Some((mean, max, min)) = aggregate_series(&self.tps, yesterday) {
+            self.daily.push(DailyMetricSummary {
+                date: yesterday_str.clone(),
+                mean,
+                max,
+                min,
+            });
+            count += 1;
+        }
+
+        // Prune old high-res points (keep only last 48 hours for safety)
+        let cutoff = now - chrono::Duration::hours(48);
+        self.tps.retain(|p| p.ts > cutoff);
+        self.qps.retain(|p| p.ts > cutoff);
+        self.mean_latency_ms.retain(|p| p.ts > cutoff);
+        self.latency_p95_ms.retain(|p| p.ts > cutoff);
+        self.latency_p99_ms.retain(|p| p.ts > cutoff);
+        self.wal_bytes_per_second.retain(|p| p.ts > cutoff);
+        self.temp_bytes_per_second.retain(|p| p.ts > cutoff);
+        self.blocked_sessions.retain(|p| p.ts > cutoff);
+        self.connections.retain(|p| p.ts > cutoff);
+
+        // Prune daily summaries older than 30 days
+        let thirty_days_ago = (now - chrono::Duration::days(30)).date_naive();
+        self.daily.retain(|d| {
+            chrono::NaiveDate::parse_from_str(&d.date, "%Y-%m-%d")
+                .map(|date| date >= thirty_days_ago)
+                .unwrap_or(false)
+        });
+
+        count
+    }
+
+    /// Aggregate completed weeks of daily summaries into weekly summaries.
+    /// Should be called on Monday after UTC midnight to process the previous week.
+    /// Returns the number of new weekly summaries created.
+    ///
+    /// Note: Called by `poller::aggregation` via closure - dead code analysis doesn't detect this.
+    #[allow(dead_code)]
+    pub fn aggregate_to_weekly(&mut self, now: DateTime<Utc>) -> usize {
+        use chrono::Datelike;
+
+        // Get last week's ISO week
+        let last_week_date = now - chrono::Duration::days(7);
+        let last_week = last_week_date.iso_week();
+        let last_week_str = format!("{}-W{:02}", last_week.year(), last_week.week());
+
+        // Skip if we already have a weekly summary for last week
+        if self.weekly.iter().any(|w| w.week == last_week_str) {
+            return 0;
+        }
+
+        // Find all daily summaries from last week
+        let last_week_dailies: Vec<&DailyMetricSummary> = self
+            .daily
+            .iter()
+            .filter(|d| {
+                chrono::NaiveDate::parse_from_str(&d.date, "%Y-%m-%d")
+                    .map(|date| {
+                        let date_week = date.iso_week();
+                        date_week.year() == last_week.year() && date_week.week() == last_week.week()
+                    })
+                    .unwrap_or(false)
+            })
+            .collect();
+
+        // Need at least 1 day to create a weekly summary
+        if last_week_dailies.is_empty() {
+            return 0;
+        }
+
+        // Compute weekly aggregates from daily summaries
+        let means: Vec<f64> = last_week_dailies.iter().map(|d| d.mean).collect();
+        let maxes: Vec<f64> = last_week_dailies.iter().map(|d| d.max).collect();
+        let mins: Vec<f64> = last_week_dailies.iter().map(|d| d.min).collect();
+
+        let weekly_mean = means.iter().sum::<f64>() / means.len() as f64;
+        let weekly_max = maxes.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let weekly_min = mins.iter().cloned().fold(f64::INFINITY, f64::min);
+
+        self.weekly.push(WeeklyMetricSummary {
+            week: last_week_str,
+            mean: weekly_mean,
+            max: weekly_max,
+            min: weekly_min,
+        });
+
+        // Prune weekly summaries older than 52 weeks (1 year)
+        let one_year_ago = now - chrono::Duration::days(365);
+        self.weekly.retain(|w| {
+            // Parse "YYYY-Www" format
+            if let Some((year_str, week_str)) = w.week.split_once("-W") {
+                if let (Ok(year), Ok(week)) = (year_str.parse::<i32>(), week_str.parse::<u32>()) {
+                    // Create a date from the ISO week (use Monday as representative)
+                    if let Some(week_date) =
+                        chrono::NaiveDate::from_isoywd_opt(year, week, chrono::Weekday::Mon)
+                    {
+                        return week_date >= one_year_ago.date_naive();
+                    }
+                }
+            }
+            false
+        });
+
+        1
+    }
 }
 
 impl Default for MetricHistory {
@@ -721,9 +858,12 @@ impl SharedState {
         self.inner.metric_history.read().await.clone()
     }
 
-    pub async fn replace_metric_history<F: FnOnce(&mut MetricHistory)>(&self, f: F) {
+    pub async fn replace_metric_history<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&mut MetricHistory) -> R,
+    {
         let mut mh = self.inner.metric_history.write().await;
-        f(&mut mh);
+        f(&mut mh)
     }
 
     pub async fn replace_alert_events(&self, events: Vec<AlertEvent>) {
