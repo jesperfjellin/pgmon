@@ -82,9 +82,11 @@
 
 **Hourly loop (<60 s):**
 
-* Lightweight bloat estimate (size vs tuples; sample `pgstattuple` on Top-N)
+* Advanced bloat analysis with configurable sampling modes:
+  - `approx`: Fast sampling via `pgstattuple_approx` (default, top N relations)
+  - `exact`: Accurate sampling via `pgstattuple` (slower, configurable top N tables)
+  - Exposes dead/live tuple counts, percentages, and tuple density
 * Wraparound safety (`age(datfrozenxid)`, worst `relfrozenxid`) with warn/crit alerts
-* Bloat sampling via `pgstattuple_approx` (top relations)
 * Stale stats (time since last analyze)
 
 ---
@@ -114,8 +116,12 @@ All metrics include `{cluster,db}` unless noted.
   `pg_table_stats_stale_seconds{relation}`
 * **Storage:**
   `pg_relation_size_bytes{relation,relkind}`, `pg_relation_table_bytes{relation,relkind}`, `pg_relation_index_bytes{relation,relkind}`, `pg_relation_toast_bytes{relation,relkind}`, `pg_relation_bloat_estimated_bytes{relation,relkind}`
-* **Bloat samples:**
-  `pg_relation_bloat_sample_free_bytes{relation}`, `pg_relation_bloat_sample_free_percent{relation}` *(requires `pgstattuple` or `pgstattuple_approx`)*
+* **Bloat samples** *(requires `pgstattuple` extension; fails if missing)*:
+  `pg_relation_bloat_sample_free_bytes{relation}`, `pg_relation_bloat_sample_free_percent{relation}`
+  - **Advanced bloat metrics** (when `bloat.sampling_mode: "exact"`):
+    `pg_relation_bloat_sample_dead_tuple_count{relation}`, `pg_relation_bloat_sample_dead_tuple_percent{relation}`,
+    `pg_relation_bloat_sample_live_tuple_count{relation}`, `pg_relation_bloat_sample_live_tuple_percent{relation}`,
+    `pg_relation_bloat_sample_tuple_density{relation}`
 * **Index usage:**
   `pg_index_scans_total{index}`, `pg_unused_index_bytes{index}`
 * **WAL / checkpoints:**
@@ -202,7 +208,7 @@ Each alert has: **expr**, **for**, **severity**, **message**, **dedupe key**.
 * `GET /api/v1/autovacuum` — table list: `%dead`, `dead/live`, last (auto)vacuum/analyze, hints.
 * `GET /api/v1/top-queries` — top by total_time/calls/I/O (ids + normalized sample).
 * `GET /api/v1/storage` — Top-N tables/indexes by bytes; growth snapshot.
-* `GET /api/v1/bloat` — sampled `pgstattuple_approx` output (table bytes, free bytes/%) for top relations (requires `pgstattuple` extension).
+* `GET /api/v1/bloat` — bloat analysis via `pgstattuple` (table bytes, free bytes/%, and optionally dead/live tuple counts/percentages when using `exact` mode) for top relations. **Requires `pgstattuple` extension; API will fail if missing.**
 * `GET /api/v1/unused-indexes` — indexes with `idx_scan = 0` and size ≥ 100 MiB (relation/index name, bytes).
 * `GET /api/v1/stale-stats` — tables whose statistics are older than alert thresholds.
 * `GET /api/v1/partitions` — inventory by parent; oldest/newest; latest upper bound; cadence seconds; suggested next range; gap seconds; retention/future holes.
@@ -231,6 +237,12 @@ limits:
   top_indexes: 50
   top_queries: 50
   partition_horizon_days: 7
+bloat:
+  # Sampling mode: "approx" (fast, pgstattuple_approx) or "exact" (accurate, pgstattuple)
+  # Invalid values will cause immediate failure at runtime
+  sampling_mode: "approx"
+  # Number of largest tables to analyze with advanced bloat sampling (when using "exact")
+  top_n_tables: 10
 alerts:
   connections_warn: 0.80
   long_txn_warn_s: 300
@@ -292,7 +304,9 @@ The repo ships a starter config at `config.pgmon.sample.yaml`. `docker compose u
 
 * **DB role:** `CREATE ROLE monitor LOGIN; GRANT pg_monitor TO monitor;`
   Ensure no extra grants; agent **refuses** to start if can write DDL/DML.
-* **Preload:** `shared_preload_libraries='pg_stat_statements'`; `CREATE EXTENSION pg_stat_statements;`
+* **Required extensions:**
+  - `shared_preload_libraries='pg_stat_statements'`; `CREATE EXTENSION pg_stat_statements;`
+  - `CREATE EXTENSION pgstattuple;` (required for bloat sampling; hourly loop will fail if missing)
 * **Useful settings:** `track_io_timing=on`, `pg_stat_statements.track=all`.
 * **Query safety:** set `statement_timeout`, `lock_timeout`; use `SET LOCAL` per session.
 * **Overhead target:** <1% DB CPU; loops within budget or log **degraded mode**.
@@ -612,7 +626,7 @@ Keep this section updated when pollers adopt new columns or extensions so contri
 
 * **Autovacuum tuner** (per-table thresholds/scale factors from observed churn)
 * **Index advisor (safe)** via `hypopg` on top queries
-* **Accurate bloat** sampling via `pgstattuple` / `pageinspect`
+* ~~**Accurate bloat** sampling via `pgstattuple` / `pageinspect`~~ ✓ **Implemented** (exact mode via `pgstattuple`)
 * **Plan regression detector** (hash plan + latency deltas)
 * **Partitioning advisor** (period, future schedule, template DDL)
 * **Vacuum outcome tracer** (vacuum runs ↔ dead-tuple/size deltas)
