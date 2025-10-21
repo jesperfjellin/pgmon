@@ -33,7 +33,7 @@ pub fn create_router(ctx: AppContext) -> Router {
         .route("/wraparound", get(get_wraparound))
         .route("/alerts/history", get(get_alerts_history))
         .route("/history/:metric", get(get_history));
-        // Combined KPI history endpoint.
+    // Combined KPI history endpoint.
     let api = api.route("/history/overview", get(get_overview_history));
 
     Router::new()
@@ -222,7 +222,9 @@ async fn get_overview_history(
     let mut downsample_any = false;
     let ds = |pts: Vec<crate::state::TimePoint>, max: usize, flag: &mut bool| {
         let (sampled, down) = crate::http::maybe_downsample(pts, max);
-        if down { *flag = true; }
+        if down {
+            *flag = true;
+        }
         sampled
     };
 
@@ -235,13 +237,41 @@ async fn get_overview_history(
         }
     };
 
-    let tps = ds(effective_filter(&history.tps), max_points, &mut downsample_any);
-    let qps = ds(effective_filter(&history.qps), max_points, &mut downsample_any);
-    let mean_latency_ms = ds(effective_filter(&history.mean_latency_ms), max_points, &mut downsample_any);
-    let latency_p95_ms = ds(effective_filter(&history.latency_p95_ms), max_points, &mut downsample_any);
-    let latency_p99_ms = ds(effective_filter(&history.latency_p99_ms), max_points, &mut downsample_any);
-    let connections = ds(effective_filter(&history.connections), max_points, &mut downsample_any);
-    let blocked_sessions = ds(effective_filter(&history.blocked_sessions), max_points, &mut downsample_any);
+    let tps = ds(
+        effective_filter(&history.tps),
+        max_points,
+        &mut downsample_any,
+    );
+    let qps = ds(
+        effective_filter(&history.qps),
+        max_points,
+        &mut downsample_any,
+    );
+    let mean_latency_ms = ds(
+        effective_filter(&history.mean_latency_ms),
+        max_points,
+        &mut downsample_any,
+    );
+    let latency_p95_ms = ds(
+        effective_filter(&history.latency_p95_ms),
+        max_points,
+        &mut downsample_any,
+    );
+    let latency_p99_ms = ds(
+        effective_filter(&history.latency_p99_ms),
+        max_points,
+        &mut downsample_any,
+    );
+    let connections = ds(
+        effective_filter(&history.connections),
+        max_points,
+        &mut downsample_any,
+    );
+    let blocked_sessions = ds(
+        effective_filter(&history.blocked_sessions),
+        max_points,
+        &mut downsample_any,
+    );
 
     Ok(Json(OverviewHistoryResponse {
         tps,

@@ -19,7 +19,7 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use crate::app::AppContext;
-use crate::persistence::{PersistenceConfig, load_if_exists, spawn_flush_loop, flush_once};
+use crate::persistence::{PersistenceConfig, flush_once, load_if_exists, spawn_flush_loop};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about = "pgmon — PostgreSQL DBA Health Platform")]
@@ -54,8 +54,12 @@ async fn main() -> anyhow::Result<()> {
         load_if_exists(&persist_cfg, &ctx.state).await;
         // Perform an immediate flush so state.json appears quickly and verify permissions.
         match flush_once(&persist_cfg, &ctx.state).await {
-            Ok(_) => tracing::info!(dir=?persist_cfg.data_dir, "initial persistence flush complete"),
-            Err(err) => tracing::error!(error=?err, dir=?persist_cfg.data_dir, "initial persistence flush failed"),
+            Ok(_) => {
+                tracing::info!(dir=?persist_cfg.data_dir, "initial persistence flush complete")
+            }
+            Err(err) => {
+                tracing::error!(error=?err, dir=?persist_cfg.data_dir, "initial persistence flush failed")
+            }
         }
         // Fire-and-forget background flush loop.
         let _flush_handle = spawn_flush_loop(persist_cfg, ctx.state.clone());
@@ -65,7 +69,8 @@ async fn main() -> anyhow::Result<()> {
         let state_for_early = ctx.state.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_secs(20)).await;
-            if let Some(cfg) = PersistenceConfig::from_env() { // re-read env in case unchanged
+            if let Some(cfg) = PersistenceConfig::from_env() {
+                // re-read env in case unchanged
                 if let Err(err) = flush_once(&cfg, &state_for_early).await {
                     tracing::warn!(error=?err, "early second persistence flush failed");
                 } else {

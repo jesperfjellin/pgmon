@@ -116,9 +116,9 @@ async fn update_workload_overview(ctx: &AppContext) -> Result<()> {
 
     if let Some(mut summary) = ctx.state.record_workload_sample(sample).await {
         tracing::debug!(
-            tps=summary.tps,
-            qps=summary.qps,
-            mean_latency_ms=summary.mean_latency_ms,
+            tps = summary.tps,
+            qps = summary.qps,
+            mean_latency_ms = summary.mean_latency_ms,
             "workload summary delta computed"
         );
         let latency = fetch_latency_percentiles(ctx).await;
@@ -141,22 +141,34 @@ async fn update_workload_overview(ctx: &AppContext) -> Result<()> {
             || summary.latency_p99_ms.is_some()
         {
             let ts = collected_at;
-            ctx.state.replace_metric_history(|mh| {
-                if let Some(v) = summary.tps { mh.record_tps(ts, v); }
-                if let Some(v) = summary.qps { mh.record_qps(ts, v); }
-                if let Some(v) = summary.mean_latency_ms { mh.record_mean_latency(ts, v); }
-                if let Some(v) = summary.latency_p95_ms { mh.record_latency_p95(ts, v); }
-                if let Some(v) = summary.latency_p99_ms { mh.record_latency_p99(ts, v); }
-                tracing::debug!(
-                    ts=ts.timestamp(),
-                    tps_points=mh.tps.len(),
-                    qps_points=mh.qps.len(),
-                    mean_latency_points=mh.mean_latency_ms.len(),
-                    p95_points=mh.latency_p95_ms.len(),
-                    p99_points=mh.latency_p99_ms.len(),
-                    "recorded workload history points"
-                );
-            }).await;
+            ctx.state
+                .replace_metric_history(|mh| {
+                    if let Some(v) = summary.tps {
+                        mh.record_tps(ts, v);
+                    }
+                    if let Some(v) = summary.qps {
+                        mh.record_qps(ts, v);
+                    }
+                    if let Some(v) = summary.mean_latency_ms {
+                        mh.record_mean_latency(ts, v);
+                    }
+                    if let Some(v) = summary.latency_p95_ms {
+                        mh.record_latency_p95(ts, v);
+                    }
+                    if let Some(v) = summary.latency_p99_ms {
+                        mh.record_latency_p99(ts, v);
+                    }
+                    tracing::debug!(
+                        ts = ts.timestamp(),
+                        tps_points = mh.tps.len(),
+                        qps_points = mh.qps.len(),
+                        mean_latency_points = mh.mean_latency_ms.len(),
+                        p95_points = mh.latency_p95_ms.len(),
+                        p99_points = mh.latency_p99_ms.len(),
+                        "recorded workload history points"
+                    );
+                })
+                .await;
 
             // Ensure persistence sees newly created workload points promptly. We rely on periodic
             // flush loop, but if it drifts, this guarantees durability within a few ms.
