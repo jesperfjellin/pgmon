@@ -1,5 +1,17 @@
 import { useEffect, useMemo, useState } from "react";
-import "./App.css";
+import {
+  Database,
+  Activity,
+  Gauge,
+  Lock,
+  Zap,
+  BarChart2,
+  Server,
+  Layers,
+  AlertTriangle,
+  Settings,
+  Clock4,
+} from "lucide-react";
 import {
   api,
   AutovacuumEntry,
@@ -15,6 +27,7 @@ import {
   WraparoundSnapshot,
   createPoller,
 } from "./api";
+import { Badge, Card, CardHeader, CardBody, MetricCard, Section, SqlSnippet } from "./components/ui";
 
 const numberFormatter = new Intl.NumberFormat();
 
@@ -101,16 +114,6 @@ function formatRange(
     return endText;
   }
   return "–";
-}
-
-function warnClass(condition: boolean, crit = false) {
-  if (crit && condition) {
-    return "status status--crit";
-  }
-  if (condition) {
-    return "status status--warn";
-  }
-  return "status status--ok";
 }
 
 function formatHours(value?: number | null) {
@@ -322,16 +325,8 @@ LIMIT $1;
 `,
 } as const;
 
-function SqlSnippet({ sql }: { sql: string }) {
-  const normalized = sql.trim();
-  return (
-    <details className="sql-snippet">
-      <summary>SQL</summary>
-      <pre>
-        <code>{normalized}</code>
-      </pre>
-    </details>
-  );
+function classNames(...xs: (string | false | null | undefined)[]) {
+  return xs.filter(Boolean).join(" ");
 }
 
 function usePollingData<T>(path: string, initial: T, intervalMs?: number) {
@@ -355,64 +350,26 @@ function usePollingData<T>(path: string, initial: T, intervalMs?: number) {
   return { data, error };
 }
 
-function AlertsPanel({
-  overview,
-}: {
-  overview: OverviewSnapshot | null;
-}) {
-  const warnAlerts = overview?.open_alerts ?? [];
-  const critAlerts = overview?.open_crit_alerts ?? [];
+// ---------- Tab Definitions ----------
+const tabs = [
+  { key: "overview", label: "Overview", icon: <Gauge className="h-4 w-4" /> },
+  { key: "workload", label: "Workload", icon: <Activity className="h-4 w-4" /> },
+  { key: "autovac", label: "Autovacuum", icon: <Zap className="h-4 w-4" /> },
+  { key: "storage", label: "Storage", icon: <Layers className="h-4 w-4" /> },
+  { key: "bloat", label: "Bloat Deep", icon: <BarChart2 className="h-4 w-4" /> },
+  { key: "stale-stats", label: "Stale Stats", icon: <Clock4 className="h-4 w-4" /> },
+  { key: "partitions", label: "Partitions", icon: <BarChart2 className="h-4 w-4" /> },
+  { key: "replication", label: "Replication", icon: <Server className="h-4 w-4" /> },
+  { key: "alerts", label: "Alerts", icon: <AlertTriangle className="h-4 w-4" /> },
+  { key: "wraparound", label: "Wraparound", icon: <Lock className="h-4 w-4" /> },
+] as const;
 
-  if (!warnAlerts.length && !critAlerts.length) {
-    return (
-      <div className="panel">
-        <h2>Alerts</h2>
-        <p className="muted">No active alerts detected.</p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="panel">
-      <h2>Alerts</h2>
-      {critAlerts.length > 0 && (
-        <div className="alert-list">
-          <h3>Critical</h3>
-          <ul>
-            {critAlerts.map((alert) => (
-              <li key={`crit-${alert}`} className="alert alert--crit">
-                {alert}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {warnAlerts.length > 0 && (
-        <div className="alert-list">
-          <h3>Warning</h3>
-          <ul>
-            {warnAlerts.map((alert) => (
-              <li key={`warn-${alert}`} className="alert alert--warn">
-                {alert}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function OverviewPanel({
-  overview,
-}: {
-  overview: OverviewSnapshot | null;
-}) {
+// ---------- Panel Components ----------
+function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
   if (!overview) {
     return (
-      <div className="panel">
-        <h2>Cluster Overview</h2>
-        <p className="muted">Loading...</p>
+      <div className="space-y-4">
+        <p className="text-sm text-slate-500">Loading...</p>
       </div>
     );
   }
@@ -432,12 +389,14 @@ function OverviewPanel({
   );
 
   return (
-    <div className="panel">
-      <h2>Cluster Overview</h2>
-      <div className="metrics-grid">
+    <div className="space-y-6">
+      {/* KPI cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
         <MetricCard
-          label="Connections"
+          title="Connections"
           value={`${overview.connections}/${overview.max_connections}`}
+          icon={<Database className="h-5 w-5" />}
+          tone="violet"
           status={
             connectionRatio >= CONNECTION_CRIT
               ? "crit"
@@ -447,485 +406,390 @@ function OverviewPanel({
           }
         />
         <MetricCard
-          label="Blocked Sessions"
+          title="TPS"
+          value={overview.tps ? overview.tps.toFixed(1) : "–"}
+          icon={<Activity className="h-5 w-5" />}
+          tone="green"
+        />
+        <MetricCard
+          title="QPS"
+          value={overview.qps ? overview.qps.toFixed(1) : "–"}
+          icon={<Activity className="h-5 w-5" />}
+          tone="blue"
+        />
+        <MetricCard
+          title="Mean Latency"
+          value={overview.mean_latency_ms ? overview.mean_latency_ms.toFixed(1) : "–"}
+          unit="ms"
+          icon={<Gauge className="h-5 w-5" />}
+          tone="amber"
+        />
+        <MetricCard
+          title="p95 Latency"
+          value={overview.latency_p95_ms ? overview.latency_p95_ms.toFixed(1) : "–"}
+          unit="ms"
+          icon={<Gauge className="h-5 w-5" />}
+          tone="rose"
+        />
+        <MetricCard
+          title="Blocked Sessions"
           value={overview.blocked_sessions}
+          icon={<Lock className="h-5 w-5" />}
+          tone="slate"
           status={blockedCrit ? "crit" : blockedWarn ? "warn" : undefined}
         />
-        <MetricCard
-          label="Longest Transaction"
-          value={formatSeconds(overview.longest_transaction_seconds)}
-          status={
-            longestTx >= LONG_TXN_CRIT
-              ? "crit"
-              : longestTx >= LONG_TXN_WARN
-              ? "warn"
-              : undefined
-          }
-        />
-        <MetricCard
-          label="TPS"
-          value={overview.tps ? overview.tps.toFixed(1) : "–"}
-        />
-        <MetricCard
-          label="QPS"
-          value={overview.qps ? overview.qps.toFixed(1) : "–"}
-        />
-        <MetricCard
-          label="Mean Latency"
-          value={
-            overview.mean_latency_ms
-              ? `${overview.mean_latency_ms.toFixed(1)} ms`
-              : "–"
-          }
-        />
-        <MetricCard
-          label="P95 Latency"
-          value={
-            overview.latency_p95_ms
-              ? `${overview.latency_p95_ms.toFixed(1)} ms`
-              : "–"
-          }
-        />
-        <MetricCard
-          label="P99 Latency"
-          value={
-            overview.latency_p99_ms
-              ? `${overview.latency_p99_ms.toFixed(1)} ms`
-              : "–"
-          }
-        />
       </div>
-      <p className="muted">
-        Updated {formatRelativeTimestamp(overview.generated_at)}
-      </p>
-      <section>
-        <h3>Blocking Chains</h3>
-        {topBlocking.length === 0 ? (
-          <p className="muted">No blocking chains detected.</p>
-        ) : (
-          <div className="table-scroll">
-            <table>
+
+      {/* Alerts + Blocking Chains */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <Card className="lg:col-span-2">
+          <CardHeader
+            title="Active Alerts"
+            icon={<AlertTriangle className="h-4 w-4 text-amber-600" />}
+            actions={
+              <Badge tone={overview.open_alerts.length + overview.open_crit_alerts.length === 0 ? "green" : "yellow"}>
+                {overview.open_alerts.length + overview.open_crit_alerts.length === 0
+                  ? "Healthy"
+                  : `${overview.open_alerts.length + overview.open_crit_alerts.length} alerts`}
+              </Badge>
+            }
+          />
+          <CardBody>
+            {overview.open_crit_alerts.length === 0 && overview.open_alerts.length === 0 ? (
+              <div className="text-sm text-slate-500">No active alerts.</div>
+            ) : (
+              <ul className="divide-y divide-slate-100">
+                {overview.open_crit_alerts.map((alert, i) => (
+                  <li key={`crit-${i}`} className="py-2 flex items-center gap-3">
+                    <Badge tone="red">crit</Badge>
+                    <div className="text-sm text-slate-800">{alert}</div>
+                  </li>
+                ))}
+                {overview.open_alerts.map((alert, i) => (
+                  <li key={`warn-${i}`} className="py-2 flex items-center gap-3">
+                    <Badge tone="yellow">warn</Badge>
+                    <div className="text-sm text-slate-800">{alert}</div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardBody>
+        </Card>
+        <Card>
+          <CardHeader title="Blocking Chains" icon={<Lock className="h-4 w-4 text-slate-500" />} />
+          <CardBody>
+            {topBlocking.length === 0 ? (
+              <div className="text-sm text-slate-500">No blocking chains detected.</div>
+            ) : (
+              <div className="space-y-2">
+                {topBlocking.slice(0, 5).map((event) => (
+                  <div key={`${event.blocked_pid}-${event.blocker_pid}`} className="text-xs">
+                    <div className="font-medium text-slate-900">
+                      PID {event.blocked_pid} ← {event.blocker_pid}
+                    </div>
+                    <div className="text-slate-500">
+                      Wait: {formatSeconds(event.blocked_wait_seconds)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardBody>
+        </Card>
+      </div>
+
+      <SqlSnippet sql={SQL_SNIPPETS.overview} />
+    </div>
+  );
+}
+
+function WorkloadTab({ queries }: { queries: TopQueryEntry[] }) {
+  const topQueries = useMemo(() => queries.slice(0, 10), [queries]);
+
+  return (
+    <div className="space-y-4">
+      <Section
+        title="Top Queries"
+        subtitle="By total execution time"
+        icon={<Activity className="h-5 w-5 text-slate-500" />}
+      />
+
+      <Card>
+        <CardBody>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
               <thead>
-                <tr>
-                  <th>Blocked</th>
-                  <th className="numeric">Wait</th>
-                  <th>Blocker</th>
-                  <th>Status</th>
-                  <th>Queries</th>
+                <tr className="text-left text-slate-500 border-b border-slate-100">
+                  <th className="py-2 pr-4">Query ID</th>
+                  <th className="py-2 pr-4">Calls</th>
+                  <th className="py-2 pr-4">Total Time (s)</th>
+                  <th className="py-2 pr-4">Mean (ms)</th>
+                  <th className="py-2 pr-4">Shared Blks Read</th>
                 </tr>
               </thead>
               <tbody>
-                {topBlocking.map((event) => (
-                  <tr key={`${event.blocked_pid}-${event.blocker_pid}`}>
-                    <td>
-                      <div>
-                        PID {event.blocked_pid}
-                        {event.blocked_usename && ` · ${event.blocked_usename}`}
-                      </div>
-                      <div className="muted">
-                        Txn {event.blocked_transaction_start
-                          ? formatRelativeTimestamp(event.blocked_transaction_start)
-                          : "unknown"}
-                      </div>
+                {topQueries.map((q) => {
+                  return (
+                    <tr key={q.queryid} className="border-b border-slate-50 hover:bg-slate-50/60">
+                      <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{q.queryid}</td>
+                      <td className="py-2 pr-4">{numberFormatter.format(q.calls)}</td>
+                      <td className="py-2 pr-4">{q.total_time_seconds.toFixed(2)}</td>
+                      <td className="py-2 pr-4">{q.mean_time_ms.toFixed(2)}</td>
+                      <td className="py-2 pr-4">{numberFormatter.format(q.shared_blks_read)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </CardBody>
+      </Card>
+
+      <SqlSnippet sql={SQL_SNIPPETS.topQueries} />
+    </div>
+  );
+}
+
+function AutovacTab({ tables }: { tables: AutovacuumEntry[] }) {
+  const topTables = useMemo(() => tables.slice(0, 8), [tables]);
+
+  return (
+    <div className="space-y-4">
+      <Section
+        title="Autovacuum Health"
+        subtitle="Dead tuples, freshness, and recent activity"
+        icon={<Zap className="h-5 w-5 text-slate-500" />}
+      />
+      <Card>
+        <CardBody>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left text-slate-500 border-b border-slate-100">
+                  <th className="py-2 pr-4">Relation</th>
+                  <th className="py-2 pr-4">Dead Tuples</th>
+                  <th className="py-2 pr-4">% Dead</th>
+                  <th className="py-2 pr-4">Last Vacuum</th>
+                  <th className="py-2 pr-4">Last Analyze</th>
+                </tr>
+              </thead>
+              <tbody>
+                {topTables.map((row) => {
+                  const total = row.n_live_tup + row.n_dead_tup;
+                  const pctDead = total > 0 ? (row.n_dead_tup / total) * 100 : undefined;
+                  return (
+                    <tr key={row.relation} className="border-b border-slate-50 hover:bg-slate-50/60">
+                      <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{row.relation}</td>
+                      <td className="py-2 pr-4">{numberFormatter.format(row.n_dead_tup)}</td>
+                      <td className="py-2 pr-4">{pctDead !== undefined ? `${pctDead.toFixed(1)}%` : "—"}</td>
+                      <td className="py-2 pr-4">{formatRelativeTimestamp(row.last_autovacuum ?? undefined)}</td>
+                      <td className="py-2 pr-4">{formatRelativeTimestamp(row.last_autoanalyze ?? undefined)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </CardBody>
+      </Card>
+      <SqlSnippet sql={SQL_SNIPPETS.autovacuum} />
+    </div>
+  );
+}
+
+function StorageTab({ rows }: { rows: StorageEntry[] }) {
+  const topRows = useMemo(() => rows.slice(0, 8), [rows]);
+  return (
+    <div className="space-y-4">
+      <Section
+        title="Largest Relations"
+        subtitle="Heap + index + TOAST split"
+        icon={<Layers className="h-5 w-5 text-slate-500" />}
+      />
+
+      <Card>
+        <CardBody>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left text-slate-500 border-b border-slate-100">
+                  <th className="py-2 pr-4">Relation</th>
+                  <th className="py-2 pr-4">Total Size</th>
+                  <th className="py-2 pr-4">Heap</th>
+                  <th className="py-2 pr-4">Indexes</th>
+                  <th className="py-2 pr-4">TOAST</th>
+                  <th className="py-2 pr-4">% Dead</th>
+                  <th className="py-2 pr-4">Est. Bloat</th>
+                </tr>
+              </thead>
+              <tbody>
+                {topRows.map((row) => (
+                  <tr key={row.relation} className="border-b border-slate-50 hover:bg-slate-50/60">
+                    <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{row.relation}</td>
+                    <td className="py-2 pr-4">{formatBytes(row.total_bytes)}</td>
+                    <td className="py-2 pr-4">{formatBytes(row.table_bytes)}</td>
+                    <td className="py-2 pr-4">{formatBytes(row.index_bytes)}</td>
+                    <td className="py-2 pr-4">{formatBytes(row.toast_bytes)}</td>
+                    <td className="py-2 pr-4">
+                      {row.dead_tuple_ratio !== undefined ? `${row.dead_tuple_ratio.toFixed(1)}%` : "—"}
                     </td>
-                    <td className="numeric">
-                      {formatSeconds(event.blocked_wait_seconds)}
-                    </td>
-                    <td>
-                      <div>
-                        PID {event.blocker_pid}
-                        {event.blocker_usename && ` · ${event.blocker_usename}`}
-                      </div>
-                    </td>
-                    <td>
-                      {event.blocker_state ?? "unknown"}
-                      {event.blocker_waiting ? " (waiting)" : ""}
-                    </td>
-                    <td>
-                      <div className="muted">
-                        Blocked: {formatQuerySnippet(event.blocked_query)}
-                      </div>
-                      <div className="muted">
-                        Blocker: {formatQuerySnippet(event.blocker_query)}
-                      </div>
+                    <td className="py-2 pr-4">
+                      {row.estimated_bloat_bytes !== undefined && row.estimated_bloat_bytes !== null
+                        ? formatBytes(row.estimated_bloat_bytes)
+                        : "—"}
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-        )}
-      </section>
-      <SqlSnippet sql={SQL_SNIPPETS.overview} />
-      <SqlSnippet sql={SQL_SNIPPETS.blocking} />
-    </div>
-  );
-}
+        </CardBody>
+      </Card>
 
-function MetricCard({
-  label,
-  value,
-  status,
-}: {
-  label: string;
-  value: number | string;
-  status?: "warn" | "crit";
-}) {
-  const badgeClass =
-    status === "crit"
-      ? "status status--crit"
-      : status === "warn"
-      ? "status status--warn"
-      : undefined;
-  return (
-    <div className="metric-card">
-      <div className="metric-label">{label}</div>
-      <div className="metric-value">
-        {value}
-        {badgeClass && (
-          <span className={`metric-badge ${badgeClass}`}>
-            {status === "crit" ? "crit" : "warn"}
-          </span>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function TopQueriesPanel({ queries }: { queries: TopQueryEntry[] }) {
-  const topQueries = useMemo(() => queries.slice(0, 10), [queries]);
-
-  return (
-    <div className="panel wide">
-      <h2>Top Queries</h2>
-      {topQueries.length === 0 ? (
-        <p className="muted">No query activity recorded yet.</p>
-      ) : (
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Query ID</th>
-                <th className="numeric">Calls</th>
-                <th className="numeric">Total Time (s)</th>
-                <th className="numeric">Mean Time (ms)</th>
-                <th className="numeric">Shared Blks Read</th>
-              </tr>
-            </thead>
-            <tbody>
-              {topQueries.map((row) => (
-                <tr key={row.queryid}>
-                  <td>{row.queryid}</td>
-                  <td className="numeric">{numberFormatter.format(row.calls)}</td>
-                  <td className="numeric">
-                    {row.total_time_seconds.toFixed(2)}
-                  </td>
-                  <td className="numeric">{row.mean_time_ms.toFixed(2)}</td>
-                  <td className="numeric">
-                    {numberFormatter.format(row.shared_blks_read)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <SqlSnippet sql={SQL_SNIPPETS.topQueries} />
-    </div>
-  );
-}
-
-function StaleStatsPanel({ rows }: { rows: StaleStatEntry[] }) {
-  const topRows = useMemo(() => rows.slice(0, 12), [rows]);
-
-  return (
-    <div className="panel wide">
-      <h2>Stale Statistics</h2>
-      {topRows.length === 0 ? (
-        <p className="muted">No tables exceed the stale-stat thresholds.</p>
-      ) : (
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Relation</th>
-                <th className="numeric">Hours Since Analyze</th>
-                <th>Last Analyze</th>
-                <th>Last Autoanalyze</th>
-                <th className="numeric">Live Tuples</th>
-              </tr>
-            </thead>
-            <tbody>
-              {topRows.map((row) => (
-                <tr key={row.relation}>
-                  <td>{row.relation}</td>
-                  <td className="numeric">{formatHours(row.hours_since_analyze)}</td>
-                  <td>{formatRelativeTimestamp(row.last_analyze ?? undefined)}</td>
-                  <td>{formatRelativeTimestamp(row.last_autoanalyze ?? undefined)}</td>
-                  <td className="numeric">{numberFormatter.format(row.n_live_tup)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <SqlSnippet sql={SQL_SNIPPETS.staleStats} />
-    </div>
-  );
-}
-
-function AutovacuumPanel({ tables }: { tables: AutovacuumEntry[] }) {
-  const topTables = useMemo(() => tables.slice(0, 8), [tables]);
-
-  return (
-    <div className="panel wide">
-      <h2>Autovacuum Health</h2>
-      {topTables.length === 0 ? (
-        <p className="muted">No user tables observed yet.</p>
-      ) : (
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Relation</th>
-                <th className="numeric">Dead Tuples</th>
-                <th className="numeric">% Dead</th>
-                <th>Last Autovacuum</th>
-                <th>Last Autoanalyze</th>
-              </tr>
-            </thead>
-            <tbody>
-              {topTables.map((row) => {
-                const total = row.n_live_tup + row.n_dead_tup;
-                const pctDead =
-                  total > 0 ? (row.n_dead_tup / total) * 100 : undefined;
-                return (
-                  <tr key={row.relation}>
-                    <td>{row.relation}</td>
-                    <td className="numeric">
-                      {numberFormatter.format(row.n_dead_tup)}
-                    </td>
-                    <td className="numeric">
-                      {pctDead !== undefined
-                        ? `${pctDead.toFixed(1)}%`
-                        : "—"}
-                    </td>
-                    <td>{formatRelativeTimestamp(row.last_autovacuum ?? undefined)}</td>
-                    <td>{formatRelativeTimestamp(row.last_autoanalyze ?? undefined)}</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <SqlSnippet sql={SQL_SNIPPETS.autovacuum} />
-    </div>
-  );
-}
-
-function StoragePanel({ rows }: { rows: StorageEntry[] }) {
-  const topRows = useMemo(() => rows.slice(0, 8), [rows]);
-  return (
-    <div className="panel wide">
-      <h2>Largest Relations</h2>
-      {topRows.length === 0 ? (
-        <p className="muted">No relation statistics available yet.</p>
-      ) : (
-        <div className="table-scroll">
-          <table>
-            <thead>
-              <tr>
-                <th>Relation</th>
-                <th className="numeric">Total Size</th>
-                <th className="numeric">Heap</th>
-                <th className="numeric">Indexes</th>
-                <th className="numeric">TOAST</th>
-                <th className="numeric">% Dead</th>
-                <th className="numeric">Est. Bloat</th>
-              </tr>
-            </thead>
-            <tbody>
-              {topRows.map((row) => (
-                <tr key={row.relation}>
-                  <td>{row.relation}</td>
-                  <td className="numeric">{formatBytes(row.total_bytes)}</td>
-                  <td className="numeric">{formatBytes(row.table_bytes)}</td>
-                  <td className="numeric">{formatBytes(row.index_bytes)}</td>
-                  <td className="numeric">{formatBytes(row.toast_bytes)}</td>
-                  <td className="numeric">
-                    {row.dead_tuple_ratio !== undefined
-                      ? `${row.dead_tuple_ratio.toFixed(1)}%`
-                      : "—"}
-                  </td>
-                  <td className="numeric">
-                    {row.estimated_bloat_bytes !== undefined && row.estimated_bloat_bytes !== null
-                      ? formatBytes(row.estimated_bloat_bytes)
-                      : "—"}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
       <SqlSnippet sql={SQL_SNIPPETS.storage} />
     </div>
   );
 }
 
-function BloatPanel({ samples }: { samples: BloatSample[] }) {
+function BloatTab({ samples }: { samples: BloatSample[] }) {
   if (samples.length === 0) {
     return (
-      <div className="panel">
-        <h2>Bloat Samples</h2>
-        <p className="muted">
-          No bloat data available. Ensure <code>pgstattuple</code> extension is installed and
-          hourly loop is running. Set <code>bloat.sampling_mode: "exact"</code> for detailed tuple
-          statistics.
-        </p>
+      <div className="space-y-4">
+        <Section title="Bloat Samples" icon={<BarChart2 className="h-5 w-5 text-slate-500" />} />
+        <Card>
+          <CardBody>
+            <p className="text-sm text-slate-500">
+              No bloat data available. Ensure <code className="bg-slate-100 px-1 rounded">pgstattuple</code> extension is installed.
+            </p>
+          </CardBody>
+        </Card>
         <SqlSnippet sql={SQL_SNIPPETS.bloat} />
       </div>
     );
   }
 
   const topSamples = useMemo(() => samples.slice(0, 20), [samples]);
-
-  // Check if any sample has advanced fields (exact mode)
-  const hasAdvancedFields = topSamples.some(s => s.dead_tuple_count != null);
+  const hasAdvancedFields = topSamples.some((s) => s.dead_tuple_count != null);
 
   return (
-    <div className="panel wide">
-      <h2>Bloat Samples {hasAdvancedFields && <span className="muted">(exact mode)</span>}</h2>
-      <div className="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Relation</th>
-              <th className="numeric">Table Bytes</th>
-              <th className="numeric">Free Bytes</th>
-              <th className="numeric">Free %</th>
-              {hasAdvancedFields && (
-                <>
-                  <th className="numeric">Dead Tuples</th>
-                  <th className="numeric">Dead %</th>
-                  <th className="numeric">Live Tuples</th>
-                  <th className="numeric">Tuple Density %</th>
-                </>
-              )}
-            </tr>
-          </thead>
-          <tbody>
-            {topSamples.map((sample) => (
-              <tr key={sample.relation}>
-                <td>{sample.relation}</td>
-                <td className="numeric">{formatBytes(sample.table_bytes)}</td>
-                <td className="numeric">{formatBytes(sample.free_bytes)}</td>
-                <td className="numeric">{sample.free_percent.toFixed(1)}%</td>
-                {hasAdvancedFields && (
-                  <>
-                    <td className="numeric">
-                      {sample.dead_tuple_count != null
-                        ? sample.dead_tuple_count.toLocaleString()
-                        : "—"}
-                    </td>
-                    <td className="numeric">
-                      {sample.dead_tuple_percent != null
-                        ? sample.dead_tuple_percent.toFixed(1) + "%"
-                        : "—"}
-                    </td>
-                    <td className="numeric">
-                      {sample.live_tuple_count != null
-                        ? sample.live_tuple_count.toLocaleString()
-                        : "—"}
-                    </td>
-                    <td className="numeric">
-                      {sample.tuple_density != null
-                        ? sample.tuple_density.toFixed(1) + "%"
-                        : "—"}
-                    </td>
-                  </>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+    <div className="space-y-4">
+      <Section
+        title="Bloat Deep"
+        subtitle={hasAdvancedFields ? "Exact mode" : "Approx mode"}
+        icon={<BarChart2 className="h-5 w-5 text-slate-500" />}
+      />
+      <Card>
+        <CardBody>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left text-slate-500 border-b border-slate-100">
+                  <th className="py-2 pr-4">Relation</th>
+                  <th className="py-2 pr-4">Table Bytes</th>
+                  <th className="py-2 pr-4">Free Bytes</th>
+                  <th className="py-2 pr-4">Free %</th>
+                  {hasAdvancedFields && (
+                    <>
+                      <th className="py-2 pr-4">Dead Tuples</th>
+                      <th className="py-2 pr-4">Dead %</th>
+                      <th className="py-2 pr-4">Live Tuples</th>
+                      <th className="py-2 pr-4">Tuple Density %</th>
+                    </>
+                  )}
+                </tr>
+              </thead>
+              <tbody>
+                {topSamples.map((sample) => (
+                  <tr key={sample.relation} className="border-b border-slate-50 hover:bg-slate-50/60">
+                    <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{sample.relation}</td>
+                    <td className="py-2 pr-4">{formatBytes(sample.table_bytes)}</td>
+                    <td className="py-2 pr-4">{formatBytes(sample.free_bytes)}</td>
+                    <td className="py-2 pr-4">{sample.free_percent.toFixed(1)}%</td>
+                    {hasAdvancedFields && (
+                      <>
+                        <td className="py-2 pr-4">
+                          {sample.dead_tuple_count != null ? sample.dead_tuple_count.toLocaleString() : "—"}
+                        </td>
+                        <td className="py-2 pr-4">
+                          {sample.dead_tuple_percent != null ? sample.dead_tuple_percent.toFixed(1) + "%" : "—"}
+                        </td>
+                        <td className="py-2 pr-4">
+                          {sample.live_tuple_count != null ? sample.live_tuple_count.toLocaleString() : "—"}
+                        </td>
+                        <td className="py-2 pr-4">
+                          {sample.tuple_density != null ? sample.tuple_density.toFixed(1) + "%" : "—"}
+                        </td>
+                      </>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardBody>
+      </Card>
       <SqlSnippet sql={SQL_SNIPPETS.bloat} />
     </div>
   );
 }
 
-function UnusedIndexPanel({ indexes }: { indexes: UnusedIndexEntry[] }) {
-  if (indexes.length === 0) {
-    return (
-      <div className="panel">
-        <h2>Unused Indexes</h2>
-        <p className="muted">No large unused indexes detected.</p>
-        <SqlSnippet sql={SQL_SNIPPETS.unusedIndexes} />
-      </div>
-    );
-  }
-
-  const topIndexes = useMemo(() => indexes.slice(0, 20), [indexes]);
+function StaleStatsTab({ rows }: { rows: StaleStatEntry[] }) {
+  const topRows = useMemo(() => rows.slice(0, 12), [rows]);
 
   return (
-    <div className="panel wide">
-      <h2>Unused Indexes</h2>
-      <div className="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Relation</th>
-              <th>Index</th>
-              <th className="numeric">Bytes</th>
-            </tr>
-          </thead>
-          <tbody>
-            {topIndexes.map((idx) => (
-              <tr key={`${idx.relation}-${idx.index}`}>
-                <td>{idx.relation}</td>
-                <td>{idx.index}</td>
-                <td className="numeric">{formatBytes(idx.bytes)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <SqlSnippet sql={SQL_SNIPPETS.unusedIndexes} />
+    <div className="space-y-4">
+      <Section
+        title="Stale Statistics"
+        subtitle="Tables needing analyze"
+        icon={<Clock4 className="h-5 w-5 text-slate-500" />}
+      />
+      <Card>
+        <CardBody>
+          {topRows.length === 0 ? (
+            <div className="text-sm text-slate-500">No tables exceed the stale-stat thresholds.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="text-left text-slate-500 border-b border-slate-100">
+                    <th className="py-2 pr-4">Relation</th>
+                    <th className="py-2 pr-4">Hours Since Analyze</th>
+                    <th className="py-2 pr-4">Last Analyze</th>
+                    <th className="py-2 pr-4">Last Autoanalyze</th>
+                    <th className="py-2 pr-4">Live Tuples</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topRows.map((row) => (
+                    <tr key={row.relation} className="border-b border-slate-50 hover:bg-slate-50/60">
+                      <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{row.relation}</td>
+                      <td className="py-2 pr-4">{formatHours(row.hours_since_analyze)}</td>
+                      <td className="py-2 pr-4">{formatRelativeTimestamp(row.last_analyze ?? undefined)}</td>
+                      <td className="py-2 pr-4">{formatRelativeTimestamp(row.last_autoanalyze ?? undefined)}</td>
+                      <td className="py-2 pr-4">{numberFormatter.format(row.n_live_tup)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardBody>
+      </Card>
+      <SqlSnippet sql={SQL_SNIPPETS.staleStats} />
     </div>
   );
 }
 
-function ReplicationPanel({ replicas }: { replicas: ReplicaLag[] }) {
-  return (
-    <div className="panel">
-      <h2>Replication</h2>
-      {replicas.length === 0 ? (
-        <p className="muted">No replication sessions detected.</p>
-      ) : (
-        <ul className="list">
-          {replicas.map((replica) => (
-            <li key={replica.replica}>
-              <span className="list__title">{replica.replica}</span>
-              <span className="list__value">
-                {formatSeconds(replica.lag_seconds)}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-      <SqlSnippet sql={SQL_SNIPPETS.replication} />
-    </div>
-  );
-}
-
-function PartitionPanel({ slices }: { slices: PartitionSlice[] }) {
+function PartitionsTab({ slices }: { slices: PartitionSlice[] }) {
   if (slices.length === 0) {
     return (
-      <div className="panel">
-        <h2>Partitions</h2>
-        <p className="muted">No partitioned parents discovered.</p>
+      <div className="space-y-4">
+        <Section title="Partitions" icon={<BarChart2 className="h-5 w-5 text-slate-500" />} />
+        <Card>
+          <CardBody>
+            <p className="text-sm text-slate-500">No partitioned parents discovered.</p>
+          </CardBody>
+        </Card>
       </div>
     );
   }
@@ -938,133 +802,164 @@ function PartitionPanel({ slices }: { slices: PartitionSlice[] }) {
       return a.missing_future_partition ? -1 : 1;
     });
   }, [slices]);
-  const atRisk = useMemo(
-    () => sortedSlices.filter((slice) => slice.missing_future_partition),
-    [sortedSlices],
-  );
+
   return (
-    <div className="panel wide">
-      <h2>Partition Horizon</h2>
-      <p className="muted">
-        Cadence and suggested ranges are derived from recent partitions; review before applying
-        DDL in production.
-      </p>
-      {atRisk.length > 0 ? (
-        <div className="alert-list">
-          <h3>Missing Future Partitions</h3>
-          <ul>
-            {atRisk.map((slice) => (
-              <li key={`gap-${slice.parent}`} className="alert alert--warn">
-                {slice.parent}: gap {formatSeconds(slice.future_gap_seconds)} ·
-                next due {formatRelativeTimestamp(slice.next_expected_partition)}
-                {slice.advisory_note ? (
-                  <>
-                    {" "}
-                    <span className="muted">— {slice.advisory_note}</span>
-                  </>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </div>
-      ) : (
-        <p className="muted">
-          All parents extend beyond the configured partition horizon.
-        </p>
-      )}
-      <div className="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Parent</th>
-              <th className="numeric">Children</th>
-              <th>Oldest Start</th>
-              <th>Latest Partition</th>
-              <th>Upper Bound</th>
-              <th>Cadence</th>
-              <th>Suggested Range</th>
-              <th>Gap</th>
-              <th>Status</th>
-              <th>Guidance</th>
-            </tr>
-          </thead>
-          <tbody>
-            {sortedSlices.map((slice) => (
-              <tr key={slice.parent}>
-                <td>{slice.parent}</td>
-                <td className="numeric">{slice.child_count}</td>
-                <td>{formatRelativeTimestamp(slice.oldest_partition)}</td>
-                <td>
-                  {slice.latest_partition_name
-                    ? `${slice.latest_partition_name} · ${formatRelativeTimestamp(
-                        slice.newest_partition,
-                      )}`
-                    : formatRelativeTimestamp(slice.newest_partition)}
-                </td>
-                <td>
-                  {formatRelativeTimestamp(slice.latest_partition_upper)}
-                </td>
-                <td>{formatSeconds(slice.cadence_seconds)}</td>
-                <td>
-                  {formatRange(
-                    slice.suggested_next_start,
-                    slice.suggested_next_end,
-                  )}
-                </td>
-                <td>{formatSeconds(slice.future_gap_seconds)}</td>
-                <td>
-                  <span className={warnClass(slice.missing_future_partition)}>
-                    {slice.missing_future_partition ? "At Risk" : "Healthy"}
-                  </span>
-                </td>
-                <td className="muted">
-                  {slice.advisory_note ?? "–"}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+    <div className="space-y-4">
+      <Section
+        title="Partition Horizon"
+        subtitle="Future coverage & gaps"
+        icon={<BarChart2 className="h-5 w-5 text-slate-500" />}
+      />
+      <Card>
+        <CardBody>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="text-left text-slate-500 border-b border-slate-100">
+                  <th className="py-2 pr-4">Parent</th>
+                  <th className="py-2 pr-4">Children</th>
+                  <th className="py-2 pr-4">Latest Upper Bound</th>
+                  <th className="py-2 pr-4">Cadence</th>
+                  <th className="py-2 pr-4">Suggested Range</th>
+                  <th className="py-2 pr-4">Gap</th>
+                  <th className="py-2 pr-4">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedSlices.map((slice) => (
+                  <tr key={slice.parent} className="border-b border-slate-50 hover:bg-slate-50/60">
+                    <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{slice.parent}</td>
+                    <td className="py-2 pr-4">{numberFormatter.format(slice.child_count)}</td>
+                    <td className="py-2 pr-4">{formatRelativeTimestamp(slice.latest_partition_upper)}</td>
+                    <td className="py-2 pr-4">{formatSeconds(slice.cadence_seconds)}</td>
+                    <td className="py-2 pr-4">{formatRange(slice.suggested_next_start, slice.suggested_next_end)}</td>
+                    <td className="py-2 pr-4">{formatSeconds(slice.future_gap_seconds)}</td>
+                    <td className="py-2 pr-4">
+                      {slice.missing_future_partition ? <Badge tone="yellow">Gap</Badge> : <Badge tone="green">Healthy</Badge>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </CardBody>
+      </Card>
       <SqlSnippet sql={SQL_SNIPPETS.partitions} />
     </div>
   );
 }
 
-function WraparoundPanel({ snapshot }: { snapshot: WraparoundSnapshot }) {
+function ReplicationTab({ replicas }: { replicas: ReplicaLag[] }) {
+  return (
+    <div className="space-y-4">
+      <Section
+        title="Replication"
+        subtitle="Replica lag (time/bytes)"
+        icon={<Server className="h-5 w-5 text-slate-500" />}
+      />
+      <Card>
+        <CardBody>
+          {replicas.length === 0 ? (
+            <div className="text-sm text-slate-500">No replication sessions detected.</div>
+          ) : (
+            <ul className="divide-y divide-slate-100">
+              {replicas.map((replica) => (
+                <li key={replica.replica} className="py-2 flex items-center justify-between">
+                  <span className="text-sm text-slate-900">{replica.replica}</span>
+                  <span className="text-sm text-slate-600">{formatSeconds(replica.lag_seconds)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardBody>
+      </Card>
+      <SqlSnippet sql={SQL_SNIPPETS.replication} />
+    </div>
+  );
+}
+
+function AlertsTab({ overview }: { overview: OverviewSnapshot | null }) {
+  const warnAlerts = overview?.open_alerts ?? [];
+  const critAlerts = overview?.open_crit_alerts ?? [];
+
+  return (
+    <div className="space-y-4">
+      <Section
+        title="Alerts"
+        subtitle="Current and recent alerts"
+        icon={<AlertTriangle className="h-5 w-5 text-amber-600" />}
+      />
+      <Card>
+        <CardBody>
+          {critAlerts.length === 0 && warnAlerts.length === 0 ? (
+            <div className="text-sm text-slate-500">No active alerts.</div>
+          ) : (
+            <ul className="divide-y divide-slate-100">
+              {critAlerts.map((alert, i) => (
+                <li key={`crit-${i}`} className="py-2 flex items-center gap-3">
+                  <Badge tone="red">crit</Badge>
+                  <div className="text-sm text-slate-800">{alert}</div>
+                </li>
+              ))}
+              {warnAlerts.map((alert, i) => (
+                <li key={`warn-${i}`} className="py-2 flex items-center gap-3">
+                  <Badge tone="yellow">warn</Badge>
+                  <div className="text-sm text-slate-800">{alert}</div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </CardBody>
+      </Card>
+    </div>
+  );
+}
+
+function WraparoundTab({ snapshot }: { snapshot: WraparoundSnapshot }) {
   const topDatabases = snapshot.databases.slice(0, 5);
   const topRelations = snapshot.relations.slice(0, 5);
   return (
-    <div className="panel">
-      <h2>Wraparound Safety</h2>
-      <div className="wrap-grid">
-        <div>
-          <h3>Databases</h3>
-          <ul className="list">
-            {topDatabases.map((row) => (
-              <li key={row.database}>
-                <span className="list__title">{row.database}</span>
-                <span className="list__value">
-                  {numberFormatter.format(row.tx_age)}
-                </span>
-              </li>
-            ))}
-            {topDatabases.length === 0 && <p className="muted">n/a</p>}
-          </ul>
-        </div>
-        <div>
-          <h3>Relations</h3>
-          <ul className="list">
-            {topRelations.map((row) => (
-              <li key={row.relation}>
-                <span className="list__title">{row.relation}</span>
-                <span className="list__value">
-                  {numberFormatter.format(row.tx_age)}
-                </span>
-              </li>
-            ))}
-            {topRelations.length === 0 && <p className="muted">n/a</p>}
-          </ul>
-        </div>
+    <div className="space-y-4">
+      <Section
+        title="Wraparound Safety"
+        subtitle="Transaction age monitoring"
+        icon={<Lock className="h-5 w-5 text-slate-500" />}
+      />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Card>
+          <CardHeader title="Databases" />
+          <CardBody>
+            {topDatabases.length === 0 ? (
+              <div className="text-sm text-slate-500">n/a</div>
+            ) : (
+              <ul className="divide-y divide-slate-100">
+                {topDatabases.map((row) => (
+                  <li key={row.database} className="py-2 flex items-center justify-between">
+                    <span className="text-sm text-slate-900">{row.database}</span>
+                    <span className="text-sm text-slate-600">{numberFormatter.format(row.tx_age)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardBody>
+        </Card>
+        <Card>
+          <CardHeader title="Relations" />
+          <CardBody>
+            {topRelations.length === 0 ? (
+              <div className="text-sm text-slate-500">n/a</div>
+            ) : (
+              <ul className="divide-y divide-slate-100">
+                {topRelations.map((row) => (
+                  <li key={row.relation} className="py-2 flex items-center justify-between">
+                    <span className="text-sm text-slate-900 font-mono text-xs">{row.relation}</span>
+                    <span className="text-sm text-slate-600">{numberFormatter.format(row.tx_age)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </CardBody>
+        </Card>
       </div>
       <SqlSnippet sql={SQL_SNIPPETS.wraparound} />
     </div>
@@ -1072,90 +967,84 @@ function WraparoundPanel({ snapshot }: { snapshot: WraparoundSnapshot }) {
 }
 
 function App() {
-  const {
-    data: overview,
-    error: overviewError,
-  } = usePollingData<OverviewSnapshot | null>(api.overview, null, 15_000);
-  const { data: autovacuum } = usePollingData<AutovacuumEntry[]>(
-    api.autovacuum,
-    [],
-    60_000,
-  );
-  const { data: topQueries } = usePollingData<TopQueryEntry[]>(
-    api.topQueries,
-    [],
-    60_000,
-  );
-  const { data: staleStats } = usePollingData<StaleStatEntry[]>(
-    api.staleStats,
-    [],
-    3600_000,
-  );
-  const { data: replication } = usePollingData<ReplicaLag[]>(
-    api.replication,
-    [],
-    30_000,
-  );
-  const { data: storage } = usePollingData<StorageEntry[]>(
-    api.storage,
-    [],
-    300_000,
-  );
-  const { data: bloatSamples } = usePollingData<BloatSample[]>(
-    api.bloat,
-    [],
-    3_600_000,
-  );
-  const { data: partitions } = usePollingData<PartitionSlice[]>(
-    api.partitions,
-    [],
-    300_000,
-  );
-  const { data: unusedIndexes } = usePollingData<UnusedIndexEntry[]>(
-    api.unusedIndexes,
-    [],
-    300_000,
-  );
-  const { data: wraparound } = usePollingData<WraparoundSnapshot>(
-    api.wraparound,
-    { databases: [], relations: [] },
-    300_000,
-  );
+  const [active, setActive] = useState("overview");
+
+  const { data: overview, error: overviewError } = usePollingData<OverviewSnapshot | null>(api.overview, null, 15_000);
+  const { data: autovacuum } = usePollingData<AutovacuumEntry[]>(api.autovacuum, [], 60_000);
+  const { data: topQueries } = usePollingData<TopQueryEntry[]>(api.topQueries, [], 60_000);
+  const { data: staleStats } = usePollingData<StaleStatEntry[]>(api.staleStats, [], 3600_000);
+  const { data: replication } = usePollingData<ReplicaLag[]>(api.replication, [], 30_000);
+  const { data: storage } = usePollingData<StorageEntry[]>(api.storage, [], 300_000);
+  const { data: bloatSamples } = usePollingData<BloatSample[]>(api.bloat, [], 3_600_000);
+  const { data: partitions } = usePollingData<PartitionSlice[]>(api.partitions, [], 300_000);
+  const { data: unusedIndexes } = usePollingData<UnusedIndexEntry[]>(api.unusedIndexes, [], 300_000);
+  const { data: wraparound } = usePollingData<WraparoundSnapshot>(api.wraparound, { databases: [], relations: [] }, 300_000);
 
   return (
-    <div className="app">
-      <header className="app__header">
-        <h1>PGMon</h1>
-        <p>
-          Monitoring cluster{" "}
-          <strong>{overview?.cluster ?? "…"}</strong>{" "}
-          {overview?.generated_at && (
-            <span>· refreshed {formatRelativeTimestamp(overview.generated_at)}</span>
-          )}
-        </p>
-        {overviewError && (
-          <div className="error-banner">
-            Failed to load overview: {overviewError}
+    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white text-slate-900">
+      {/* Top Nav */}
+      <div className="border-b border-slate-200 bg-white/70 backdrop-blur sticky top-0 z-10">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 rounded-xl bg-sky-500 text-white grid place-items-center shadow-sm">
+              <Database className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="text-sm text-slate-500">Monitoring cluster</div>
+              <div className="font-semibold">{overview?.cluster ?? "…"}</div>
+            </div>
+            {overview?.generated_at && (
+              <Badge tone="green">refreshed {formatRelativeTimestamp(overview.generated_at)}</Badge>
+            )}
           </div>
-        )}
-      </header>
-      <main className="app__main">
-        <OverviewPanel overview={overview} />
-        <AlertsPanel overview={overview} />
-        <ReplicationPanel replicas={replication} />
-        <WraparoundPanel snapshot={wraparound} />
-        <AutovacuumPanel tables={autovacuum} />
-        <TopQueriesPanel queries={topQueries} />
-        <StaleStatsPanel rows={staleStats} />
-        <StoragePanel rows={storage} />
-        <BloatPanel samples={bloatSamples} />
-        <UnusedIndexPanel indexes={unusedIndexes} />
-        <PartitionPanel slices={partitions} />
-      </main>
-      <footer className="app__footer">
-        Prometheus metrics available at <code>/metrics</code> · UI refreshes every
-        30s.
-      </footer>
+          {overviewError && (
+            <div className="text-sm text-rose-600">Error: {overviewError}</div>
+          )}
+        </div>
+      </div>
+
+      {/* Body */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-[230px_1fr] gap-6">
+        {/* Sidebar */}
+        <aside className="lg:sticky lg:top-16 self-start">
+          <Card>
+            <CardBody>
+              <nav className="flex flex-col gap-1">
+                {tabs.map((t) => (
+                  <button
+                    key={t.key}
+                    onClick={() => setActive(t.key)}
+                    className={classNames(
+                      "w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm",
+                      active === t.key ? "bg-sky-50 text-sky-700 border border-sky-100" : "hover:bg-slate-50 text-slate-700"
+                    )}
+                  >
+                    {t.icon}
+                    <span>{t.label}</span>
+                  </button>
+                ))}
+              </nav>
+            </CardBody>
+          </Card>
+          <div className="mt-4 text-xs text-slate-500 px-2">
+            UI refreshes every 30s · Prom metrics at <code className="font-mono">/metrics</code>
+          </div>
+        </aside>
+
+        {/* Main Content */}
+        <main>
+          {active === "overview" && <OverviewTab overview={overview} />}
+          {active === "workload" && <WorkloadTab queries={topQueries} />}
+          {active === "autovac" && <AutovacTab tables={autovacuum} />}
+          {active === "storage" && <StorageTab rows={storage} />}
+          {active === "bloat" && <BloatTab samples={bloatSamples} />}
+          {active === "stale-stats" && <StaleStatsTab rows={staleStats} />}
+          {active === "partitions" && <PartitionsTab slices={partitions} />}
+          {active === "replication" && <ReplicationTab replicas={replication} />}
+          {active === "alerts" && <AlertsTab overview={overview} />}
+          {active === "wraparound" && <WraparoundTab snapshot={wraparound} />}
+        </main>
+      </div>
     </div>
   );
 }

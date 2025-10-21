@@ -1,1 +1,4 @@
-/* Reserved for future global styles */
+@import "tailwindcss/theme" layer(theme);
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
