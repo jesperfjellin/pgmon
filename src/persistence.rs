@@ -4,7 +4,9 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
-use crate::state::{AlertEvent, MetricHistory, SharedState, TimePoint, DailyMetricSummary, WeeklyMetricSummary};
+use crate::state::{
+    AlertEvent, DailyMetricSummary, MetricHistory, SharedState, TimePoint, WeeklyMetricSummary,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedState {
@@ -132,13 +134,13 @@ pub async fn flush_once(cfg: &PersistenceConfig, state: &SharedState) -> anyhow:
     let metric_history = state.snapshot_metric_history().await;
     let alert_events = state.list_alert_events().await;
     tracing::debug!(
-        tps_points=metric_history.tps.len(),
-        qps_points=metric_history.qps.len(),
-        mean_latency_points=metric_history.mean_latency_ms.len(),
-        p95_points=metric_history.latency_p95_ms.len(),
-        p99_points=metric_history.latency_p99_ms.len(),
-        blocked_points=metric_history.blocked_sessions.len(),
-        connections_points=metric_history.connections.len(),
+        tps_points = metric_history.tps.len(),
+        qps_points = metric_history.qps.len(),
+        mean_latency_points = metric_history.mean_latency_ms.len(),
+        p95_points = metric_history.latency_p95_ms.len(),
+        p99_points = metric_history.latency_p99_ms.len(),
+        blocked_points = metric_history.blocked_sessions.len(),
+        connections_points = metric_history.connections.len(),
         "flush snapshot lengths"
     );
     let persisted = PersistedState {
