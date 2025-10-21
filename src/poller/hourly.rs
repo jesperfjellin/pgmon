@@ -1,14 +1,12 @@
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Result;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use sqlx::Row;
-use tracing::{instrument, warn};
+use tracing::instrument;
 
 use crate::app::AppContext;
 use crate::metrics::{AlertKind, AlertSeverity};
-use crate::poller::util::{is_missing_column, is_missing_function};
 use crate::state::{
     PartitionSlice, ReplicaLag, WraparoundDatabase, WraparoundRelation, WraparoundSnapshot,
 };
@@ -60,7 +58,33 @@ JOIN LATERAL pgstattuple_approx(rel) stats ON TRUE
 ORDER BY table_bytes DESC
 "#;
 
-static PG_STATTUPLE_MISSING: AtomicBool = AtomicBool::new(false);
+const BLOAT_SAMPLE_EXACT_SQL: &str = r#"
+WITH top_relations AS (
+    SELECT c.oid::regclass AS rel,
+           c.oid,
+           n.nspname,
+           c.relname
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+      AND c.relkind = 'r'
+    ORDER BY pg_total_relation_size(c.oid) DESC
+    LIMIT $1
+)
+SELECT
+    (nspname || '.' || relname) AS relation,
+    stats.table_len AS table_bytes,
+    stats.free_space::bigint AS free_bytes,
+    stats.free_percent AS free_percent,
+    stats.dead_tuple_count AS dead_tuple_count,
+    stats.dead_tuple_percent AS dead_tuple_percent,
+    stats.tuple_count AS live_tuple_count,
+    stats.tuple_percent AS live_tuple_percent,
+    stats.tuple_percent AS tuple_density
+FROM top_relations
+JOIN LATERAL pgstattuple(rel) stats ON TRUE
+ORDER BY table_bytes DESC
+"#;
 
 #[instrument(skip_all)]
 pub async fn run(ctx: &AppContext) -> Result<()> {
@@ -360,31 +384,24 @@ async fn update_wraparound(ctx: &AppContext) -> Result<()> {
 }
 
 async fn update_bloat_samples(ctx: &AppContext) -> Result<()> {
-    if PG_STATTUPLE_MISSING.load(Ordering::Relaxed) {
-        ctx.state.update_bloat_samples(Vec::new()).await;
-        return Ok(());
-    }
-
-    let limit = ctx.config.limits.top_relations as i64;
-    let rows = match sqlx::query(BLOAT_SAMPLE_SQL)
-        .bind(limit)
-        .fetch_all(&ctx.pool)
-        .await
-    {
-        Ok(rows) => rows,
-        Err(sqlx::Error::Database(db_err)) => {
-            let err = db_err.as_ref();
-            if is_missing_function(err) || is_missing_column(err) {
-                if !PG_STATTUPLE_MISSING.swap(true, Ordering::Relaxed) {
-                    warn!("pgstattuple_approx unavailable; bloat sampling disabled");
-                }
-                ctx.state.update_bloat_samples(Vec::new()).await;
-                return Ok(());
-            }
-            return Err(sqlx::Error::Database(db_err).into());
+    let sampling_mode = ctx.config.bloat.sampling_mode.as_str();
+    let (query, limit) = match sampling_mode {
+        "exact" | "detailed" => {
+            // For exact mode, use pgstattuple which is slower, so limit to bloat.top_n_tables
+            (BLOAT_SAMPLE_EXACT_SQL, ctx.config.bloat.top_n_tables as i64)
         }
-        Err(err) => return Err(err.into()),
+        "approx" => {
+            // Approx mode uses pgstattuple_approx, use top_relations limit
+            (BLOAT_SAMPLE_SQL, ctx.config.limits.top_relations as i64)
+        }
+        _ => anyhow::bail!(
+            "Invalid bloat.sampling_mode '{}'; must be 'approx' or 'exact'",
+            sampling_mode
+        ),
     };
+
+    // Execute query - if extension is missing, this will fail with clear error
+    let rows = sqlx::query(query).bind(limit).fetch_all(&ctx.pool).await?;
 
     let mut samples = Vec::with_capacity(rows.len());
     for row in rows {
@@ -392,12 +409,38 @@ async fn update_bloat_samples(ctx: &AppContext) -> Result<()> {
         let table_bytes: i64 = row.try_get("table_bytes")?;
         let free_bytes: i64 = row.try_get("free_bytes")?;
         let free_percent: f64 = row.try_get("free_percent")?;
-        samples.push(crate::state::BloatSample {
-            relation,
-            table_bytes,
-            free_bytes,
-            free_percent,
-        });
+
+        let sample = match sampling_mode {
+            "exact" | "detailed" => {
+                // In exact mode, these fields MUST exist - fail if missing
+                crate::state::BloatSample {
+                    relation,
+                    table_bytes,
+                    free_bytes,
+                    free_percent,
+                    dead_tuple_count: Some(row.try_get("dead_tuple_count")?),
+                    dead_tuple_percent: Some(row.try_get("dead_tuple_percent")?),
+                    live_tuple_count: Some(row.try_get("live_tuple_count")?),
+                    live_tuple_percent: Some(row.try_get("live_tuple_percent")?),
+                    tuple_density: Some(row.try_get("tuple_density")?),
+                }
+            }
+            _ => {
+                // In approx mode, advanced fields are not available
+                crate::state::BloatSample {
+                    relation,
+                    table_bytes,
+                    free_bytes,
+                    free_percent,
+                    dead_tuple_count: None,
+                    dead_tuple_percent: None,
+                    live_tuple_count: None,
+                    live_tuple_percent: None,
+                    tuple_density: None,
+                }
+            }
+        };
+        samples.push(sample);
     }
 
     ctx.metrics
