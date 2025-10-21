@@ -24,8 +24,10 @@ services:
       - "8181:8181"
     volumes:
       - ./config.pgmon.yaml:/config/pgmon.yaml:ro
+      - pgmon-history:/var/lib/pgmon
 
 volumes:
   cargo-registry:
   cargo-git:
   target-cache:
+  pgmon-history:

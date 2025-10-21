@@ -296,6 +296,11 @@ RUST_LOG=info
 
 The repo ships a starter config at `config.pgmon.sample.yaml`. `docker compose up pgmon` mounts it into the container as `/config/pgmon.yaml`; copy and edit this file (or set `PGMON_CONFIG`) to point the agent at your own Postgres cluster.
 
+- **Persistent history:** runtime images write metric and alert history JSON to `/var/lib/pgmon` (exposed via `PGMON_DATA_DIR`). The Compose file mounts the `pgmon-history` named volume there so samples survive restarts/upgrades; keep that volume when deploying in other orchestrators.
+  - Enable by setting `PGMON_DATA_DIR` (directory must be writable). Optional `PGMON_FLUSH_INTERVAL_SECS` controls flush cadence (default 60).
+  - File layout (initial): single `state.json` containing high-res ring buffer slices and recent alert events. Future versions may add rollup files (daily/weekly) as aggregation tasks mature.
+  - On startup: if `state.json` exists it is loaded before poller loops run; corrupted JSON is ignored with a warning.
+
 - `ui.hide_postgres_defaults` hides the built-in `postgres`/`template*` databases from wraparound panels, keeping the focus on user databases.
 
 ---
@@ -550,6 +555,20 @@ The remaining work items from the spec (alert engines, notifier plumbing, fronte
 * **Synthetic canary:** `SELECT 1` and tiny `EXPLAIN (ANALYZE, BUFFERS)` on a known table; record latency gauge.
 * **Perf:** ensure each loop remains within budget under moderate concurrency.
 * **Chaos:** long txn, blocking locks, forced temp spills, WAL bursts, paused autovac, replica lag simulation.
+
+### Test Layout
+
+Tests are organized to balance encapsulation with clarity:
+
+- Inline unit tests (`#[cfg(test)]` blocks) remain only for private helpers where exposing them would bloat the public API (e.g. certain hourly poller parsing and classification functions).
+- Cross-module or behavior tests reside under `tests/` and compile against the crate as a library. This prevents each test from running twice (once for bin, once for lib) and keeps `src/` focused on production code.
+
+Current integration tests:
+- `tests/alert_events.rs` — alert lifecycle ordering (start/escalate/clear diffs).
+- `tests/workload_summary.rs` — workload rate, latency, WAL/temp throughput, checkpoint ratios.
+- `tests/history_downsampling.rs` — retention downsampling helper size enforcement.
+
+Refactor guideline: if an inline test only touches public items (or items we can safely make public), migrate it to `tests/`. Keep inline tests only when exercising internals not intended for external use.
 
 ---
 
@@ -848,7 +867,7 @@ xl:  1280px  /* 6 KPI cards in single row */
 ```rust
 // In SharedState
 pub struct MetricHistory {
-    max_points: usize,  // Ring buffer size (e.g., 1000 points)
+    max_points: usize,  // Ring buffer size (e.g., 300 points ≈ 24h @ 5m, tune per loop)
     tps: VecDeque<TimePoint>,
     qps: VecDeque<TimePoint>,
     latency_mean: VecDeque<TimePoint>,
@@ -867,6 +886,22 @@ struct TimePoint {
 // New API endpoint
 GET /api/v1/history?metric=tps&duration=1h
 ```
+
+#### **Historical Retention & Aggregation** (Planned)
+- **Dual-tier storage:** keep **high-resolution samples for 24h** (loop cadence, capped by a ring buffer) and roll those into **coarser aggregates at 7d, 30d, and 365d windows** (daily means/min/max for the first two, weekly means for the yearly view) so we can visualize both recent incidents and long-term tuning wins.
+- **Aggregators:** nightly job (or background task) collapses intraday points into `DailyMetricSummary` structs `{ date, mean, max, min }` and weekly rollups `{ week, mean, max, min }`, persisted in-memory (future: durable store).
+- **Alerts timeline:** emit `AlertEvent { id, message, severity, started_at, cleared_at }` whenever loops raise or resolve conditions. Maintain:
+  - `open_alerts` for instantaneous overview panels.
+  - `VecDeque<AlertEvent>` for historical UI (sticky severity badges, “time in state”).
+- **API surface:**
+  - `GET /api/v1/history/{metric}?window=24h&rollup=auto` → high-res samples with optional downsampling.
+  - `GET /api/v1/history/{metric}?window=7d&rollup=daily`, `...&window=30d`, `...&window=365d&rollup=weekly` → aggregated summaries for medium/long horizons.
+  - `GET /api/v1/alerts/history?limit=200` → chronological alert events (active + cleared) for timeline visualizations.
+- **Frontend consumption:**
+  - `useTimeseries(metric, window)` hook abstracts polling and downsampling selection.
+  - Overview sparklines pull 24h high-res; modal charts offer 7d/30d rollups.
+  - Alerts tab shows current list + “recent history” section with start/end timestamps and duration pills.
+- **Retention defaults:** ship with 24h high-res + 7d/30d daily + 365d weekly rollups baked in (no YAML required). Optional advanced overrides can live behind env vars if real-world operators request more/less retention.
 
 #### **Live Updates via WebSocket** (Optional)
 - Current: 30s polling with `/api/v1/*` endpoints

@@ -135,6 +135,10 @@ async fn update_workload_overview(ctx: &AppContext) -> Result<()> {
             })
             .await;
 
+        // Capture post-update overview snapshot into history buffers.
+        let latest = ctx.state.get_snapshots().await.overview;
+        ctx.state.record_history_points(&latest).await;
+
         ctx.metrics.set_workload_metrics(
             ctx.cluster_name(),
             summary.tps,

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 /// Aggregated snapshots that back the REST API.
@@ -38,6 +38,200 @@ impl Default for AppSnapshots {
     }
 }
 
+// =============================
+// Historical Retention (Phase 1)
+// =============================
+// High-resolution metric samples (ring buffers) retained for ~24h and future
+// aggregation windows (7d, 30d, 365d) planned per README Historical Retention & Aggregation.
+// This initial commit introduces in-memory data structures only; poller wiring
+// and HTTP endpoints will follow in subsequent steps.
+
+/// Point-in-time numeric observation for a specific metric.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimePoint {
+    #[serde(with = "chrono::serde::ts_seconds")]
+    pub ts: DateTime<Utc>,
+    pub value: f64,
+}
+
+/// Daily aggregate summary (intraday collapse) for medium horizons.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyMetricSummary {
+    /// UTC date (YYYY-MM-DD) string for simplicity (avoid chrono::Date serialization complexity here).
+    pub date: String,
+    pub mean: f64,
+    pub max: f64,
+    pub min: f64,
+}
+
+/// Weekly aggregate (Monday-based ISO week number) for long horizons.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WeeklyMetricSummary {
+    /// ISO week identifier "YYYY-Www".
+    pub week: String,
+    pub mean: f64,
+    pub max: f64,
+    pub min: f64,
+}
+
+/// Historical alert lifecycle event.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertEvent {
+    pub id: u64,
+    pub kind: String,
+    pub message: String,
+    pub severity: String, // warn | crit
+    #[serde(with = "chrono::serde::ts_seconds")]
+    pub started_at: DateTime<Utc>,
+    #[serde(with = "chrono::serde::ts_seconds_option")]
+    pub cleared_at: Option<DateTime<Utc>>,
+}
+
+/// Ring-buffer configuration and storage for high-resolution series.
+#[derive(Debug, Clone, Serialize)]
+pub struct MetricHistory {
+    pub max_points: usize,
+    pub tps: Vec<TimePoint>,
+    pub qps: Vec<TimePoint>,
+    pub mean_latency_ms: Vec<TimePoint>,
+    pub latency_p95_ms: Vec<TimePoint>,
+    pub latency_p99_ms: Vec<TimePoint>,
+    pub wal_bytes_per_second: Vec<TimePoint>,
+    pub temp_bytes_per_second: Vec<TimePoint>,
+    pub blocked_sessions: Vec<TimePoint>,
+    pub connections: Vec<TimePoint>,
+    // Future: add more series as needed (e.g., checkpoints, replication lag, dead tuple ratios)
+    // Daily & weekly rollups (populated by future background task):
+    pub daily: Vec<DailyMetricSummary>,
+    pub weekly: Vec<WeeklyMetricSummary>,
+}
+
+impl MetricHistory {
+    pub fn new(max_points: usize) -> Self {
+        Self {
+            max_points,
+            tps: Vec::with_capacity(max_points),
+            qps: Vec::with_capacity(max_points),
+            mean_latency_ms: Vec::with_capacity(max_points),
+            latency_p95_ms: Vec::with_capacity(max_points),
+            latency_p99_ms: Vec::with_capacity(max_points),
+            wal_bytes_per_second: Vec::with_capacity(max_points),
+            temp_bytes_per_second: Vec::with_capacity(max_points),
+            blocked_sessions: Vec::with_capacity(max_points),
+            connections: Vec::with_capacity(max_points),
+            daily: Vec::new(),
+            weekly: Vec::new(),
+        }
+    }
+
+    #[allow(dead_code)]
+    fn push(series: &mut Vec<TimePoint>, point: TimePoint, max: usize) {
+        series.push(point);
+        if series.len() > max {
+            let overflow = series.len() - max;
+            series.drain(0..overflow);
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn record_tps(&mut self, ts: DateTime<Utc>, value: f64) {
+        Self::push(&mut self.tps, TimePoint { ts, value }, self.max_points);
+    }
+    #[allow(dead_code)]
+    pub fn record_qps(&mut self, ts: DateTime<Utc>, value: f64) {
+        Self::push(&mut self.qps, TimePoint { ts, value }, self.max_points);
+    }
+    #[allow(dead_code)]
+    pub fn record_mean_latency(&mut self, ts: DateTime<Utc>, value: f64) {
+        Self::push(
+            &mut self.mean_latency_ms,
+            TimePoint { ts, value },
+            self.max_points,
+        );
+    }
+    #[allow(dead_code)]
+    pub fn record_latency_p95(&mut self, ts: DateTime<Utc>, value: f64) {
+        Self::push(
+            &mut self.latency_p95_ms,
+            TimePoint { ts, value },
+            self.max_points,
+        );
+    }
+    #[allow(dead_code)]
+    pub fn record_latency_p99(&mut self, ts: DateTime<Utc>, value: f64) {
+        Self::push(
+            &mut self.latency_p99_ms,
+            TimePoint { ts, value },
+            self.max_points,
+        );
+    }
+    #[allow(dead_code)]
+    pub fn record_wal_rate(&mut self, ts: DateTime<Utc>, value: f64) {
+        Self::push(
+            &mut self.wal_bytes_per_second,
+            TimePoint { ts, value },
+            self.max_points,
+        );
+    }
+    #[allow(dead_code)]
+    pub fn record_temp_rate(&mut self, ts: DateTime<Utc>, value: f64) {
+        Self::push(
+            &mut self.temp_bytes_per_second,
+            TimePoint { ts, value },
+            self.max_points,
+        );
+    }
+    #[allow(dead_code)]
+    pub fn record_blocked_sessions(&mut self, ts: DateTime<Utc>, value: f64) {
+        Self::push(
+            &mut self.blocked_sessions,
+            TimePoint { ts, value },
+            self.max_points,
+        );
+    }
+    #[allow(dead_code)]
+    pub fn record_connections(&mut self, ts: DateTime<Utc>, value: f64) {
+        Self::push(
+            &mut self.connections,
+            TimePoint { ts, value },
+            self.max_points,
+        );
+    }
+
+    /// Fetch a series by logical name; used by history API for dynamic selection.
+    #[allow(dead_code)]
+    pub fn series(&self, name: &str) -> Option<&[TimePoint]> {
+        match name {
+            "tps" => Some(&self.tps),
+            "qps" => Some(&self.qps),
+            "mean_latency_ms" => Some(&self.mean_latency_ms),
+            "latency_p95_ms" => Some(&self.latency_p95_ms),
+            "latency_p99_ms" => Some(&self.latency_p99_ms),
+            "wal_bytes_per_second" => Some(&self.wal_bytes_per_second),
+            "temp_bytes_per_second" => Some(&self.temp_bytes_per_second),
+            "blocked_sessions" => Some(&self.blocked_sessions),
+            "connections" => Some(&self.connections),
+            _ => None,
+        }
+    }
+
+    // TODO(jesperfjellin): Implement nightly aggregation job collapsing high-res points into DailyMetricSummary/WeeklyMetricSummary.
+    // Strategy outline:
+    //   1. At UTC rollover, scan each series' points for previous day, compute mean/max/min, push to daily.
+    //   2. At start of ISO week (Mon 00:00 UTC), collapse last 7 daily entries into weekly summary.
+    //   3. Enforce retention: keep 7d daily for 30d window (prune >30d), keep 52 weekly entries (~1y).
+    //   4. Persist summaries + alert_events to JSON files under PGMON_DATA_DIR for durability across restarts.
+    //   5. Provide /api/v1/history/{metric}?window=7d&rollup=daily and 30d/365d variants.
+    // NOTE: Implementation deferred until baseline high-res history proves stable under load.
+}
+
+impl Default for MetricHistory {
+    fn default() -> Self {
+        // Provide a conservative default size if constructed indirectly (e.g., tests).
+        MetricHistory::new(1000)
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct OverviewSnapshot {
     pub cluster: String,
@@ -62,6 +256,8 @@ pub struct OverviewSnapshot {
     pub temp_bytes_per_second: Option<f64>,
     pub open_alerts: Vec<String>,
     pub open_crit_alerts: Vec<String>,
+    #[serde(skip)]
+    pub(crate) _internal_alert_hash: u64,
 }
 
 impl Default for OverviewSnapshot {
@@ -88,6 +284,7 @@ impl Default for OverviewSnapshot {
             temp_bytes_per_second: None,
             open_alerts: Vec::new(),
             open_crit_alerts: Vec::new(),
+            _internal_alert_hash: 0,
         }
     }
 }
@@ -267,6 +464,7 @@ pub struct WorkloadSummary {
     pub latency_p99_ms: Option<f64>,
     pub wal_bytes_total: Option<i64>,
     pub wal_bytes_per_second: Option<f64>,
+    #[allow(dead_code)]
     pub temp_bytes_total: Option<i64>,
     pub temp_bytes_per_second: Option<f64>,
     pub checkpoints_timed_total: Option<i64>,
@@ -276,7 +474,9 @@ pub struct WorkloadSummary {
 }
 
 impl WorkloadSummary {
-    fn from_samples(previous: &WorkloadSample, current: &WorkloadSample) -> Option<Self> {
+    /// Construct a `WorkloadSummary` given two cumulative `WorkloadSample`s.
+    /// Returns `None` if the elapsed time between samples is zero or negative.
+    pub fn from_samples(previous: &WorkloadSample, current: &WorkloadSample) -> Option<Self> {
         let elapsed = current
             .collected_at
             .signed_duration_since(previous.collected_at)
@@ -379,85 +579,19 @@ fn compute_rate(delta: f64, elapsed_seconds: f64) -> Option<f64> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::{Duration, TimeZone, Utc};
-
-    #[test]
-    fn workload_summary_computes_rates() {
-        let previous = WorkloadSample {
-            collected_at: Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap(),
-            total_xacts: 1_000.0,
-            total_calls: Some(2_000.0),
-            total_time_ms: Some(40_000.0),
-            wal_bytes: Some(1_000),
-            temp_bytes: Some(10_000),
-            checkpoints_timed: Some(10),
-            checkpoints_requested: Some(2),
-        };
-
-        let current = WorkloadSample {
-            collected_at: previous.collected_at + Duration::seconds(60),
-            total_xacts: 1_360.0,
-            total_calls: Some(2_300.0),
-            total_time_ms: Some(43_000.0),
-            wal_bytes: Some(1_600),
-            temp_bytes: Some(16_000),
-            checkpoints_timed: Some(11),
-            checkpoints_requested: Some(3),
-        };
-
-        let summary = WorkloadSummary::from_samples(&previous, &current).expect("summary");
-
-        assert!((summary.tps.expect("tps") - 6.0).abs() < 1e-6);
-        assert!((summary.qps.expect("qps") - 5.0).abs() < 1e-6);
-        assert!((summary.mean_latency_ms.expect("lat") - 10.0).abs() < 1e-6);
-        assert!(summary.latency_p95_ms.is_none());
-        assert!(summary.latency_p99_ms.is_none());
-        assert_eq!(summary.wal_bytes_total, Some(1_600));
-        assert!((summary.wal_bytes_per_second.expect("wal rate") - 10.0).abs() < 1e-6);
-        assert_eq!(summary.temp_bytes_total, Some(16_000));
-        assert!((summary.temp_bytes_per_second.expect("temp rate") - 100.0).abs() < 1e-6);
-        assert_eq!(summary.checkpoints_timed_total, Some(11));
-        assert_eq!(summary.checkpoints_requested_total, Some(3));
-        assert_eq!(
-            summary.checkpoint_requested_ratio,
-            Some(0.5),
-            "requested ratio mismatch"
-        );
-        assert!(
-            summary
-                .checkpoint_mean_interval_seconds
-                .map(|v| (v - 30.0).abs() < 1e-6)
-                .unwrap_or(false),
-            "mean interval mismatch"
-        );
-    }
-
-    #[test]
-    fn workload_summary_handles_zero_elapsed() {
-        let timestamp = Utc.with_ymd_and_hms(2024, 1, 1, 0, 0, 0).unwrap();
-        let sample = WorkloadSample {
-            collected_at: timestamp,
-            total_xacts: 100.0,
-            total_calls: Some(200.0),
-            total_time_ms: Some(1_000.0),
-            wal_bytes: Some(1_000),
-            temp_bytes: Some(2_000),
-            checkpoints_timed: Some(5),
-            checkpoints_requested: Some(1),
-        };
-
-        assert!(WorkloadSummary::from_samples(&sample, &sample).is_none());
-    }
-}
-
 #[derive(Default)]
 struct SharedStateInner {
     snapshots: RwLock<AppSnapshots>,
     loop_health: RwLock<HashMap<String, LoopHealth>>,
     workload_sample: RwLock<Option<WorkloadSample>>,
+    // High-res metric retention (24h window target). Default 24h at 60s workload cadence ~1440 points; choose 1500.
+    #[allow(dead_code)]
+    metric_history: RwLock<MetricHistory>,
+    // Alert history (recent events). Capacity is modest (e.g., 200) to keep memory bounded.
+    #[allow(dead_code)]
+    alert_events: RwLock<Vec<AlertEvent>>,
+    #[allow(dead_code)]
+    previous_alerts: RwLock<(Vec<String>, Vec<String>)>,
 }
 
 /// Shared state container for the HTTP layer and poller loops.
@@ -469,7 +603,14 @@ pub struct SharedState {
 impl SharedState {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(SharedStateInner::default()),
+            inner: Arc::new(SharedStateInner {
+                snapshots: RwLock::new(AppSnapshots::default()),
+                loop_health: RwLock::new(HashMap::new()),
+                workload_sample: RwLock::new(None),
+                metric_history: RwLock::new(MetricHistory::new(1_500)),
+                alert_events: RwLock::new(Vec::new()),
+                previous_alerts: RwLock::new((Vec::new(), Vec::new())),
+            }),
         }
     }
 
@@ -477,9 +618,15 @@ impl SharedState {
         self.inner.snapshots.read().await.clone()
     }
 
+    #[allow(dead_code)]
     pub async fn update_overview(&self, overview: OverviewSnapshot) {
         let mut guard = self.inner.snapshots.write().await;
+        let prev_warn = guard.overview.open_alerts.clone();
+        let prev_crit = guard.overview.open_crit_alerts.clone();
         guard.overview = overview;
+        let current = guard.overview.clone();
+        drop(guard);
+        diff_alerts_and_record(self, &prev_warn, &prev_crit, &current).await;
     }
 
     pub async fn update_overview_with<F>(&self, apply: F)
@@ -487,7 +634,12 @@ impl SharedState {
         F: FnOnce(&mut OverviewSnapshot),
     {
         let mut guard = self.inner.snapshots.write().await;
+        let prev_warn = guard.overview.open_alerts.clone();
+        let prev_crit = guard.overview.open_crit_alerts.clone();
         apply(&mut guard.overview);
+        let current = guard.overview.clone();
+        drop(guard);
+        diff_alerts_and_record(self, &prev_warn, &prev_crit, &current).await;
     }
 
     pub async fn update_autovacuum(&self, rows: Vec<AutovacuumEntry>) {
@@ -544,6 +696,76 @@ impl SharedState {
         summary
     }
 
+    /// Record workload-derived history points (called after overview update).
+    #[allow(dead_code)]
+    pub async fn record_history_points(&self, overview: &OverviewSnapshot) {
+        let mut guard = self.inner.metric_history.write().await;
+        if let Some(ts) = overview.generated_at {
+            if let Some(v) = overview.tps {
+                guard.record_tps(ts, v);
+            }
+            if let Some(v) = overview.qps {
+                guard.record_qps(ts, v);
+            }
+            if let Some(v) = overview.mean_latency_ms {
+                guard.record_mean_latency(ts, v);
+            }
+            if let Some(v) = overview.latency_p95_ms {
+                guard.record_latency_p95(ts, v);
+            }
+            if let Some(v) = overview.latency_p99_ms {
+                guard.record_latency_p99(ts, v);
+            }
+            if let Some(v) = overview.wal_bytes_per_second {
+                guard.record_wal_rate(ts, v);
+            }
+            if let Some(v) = overview.temp_bytes_per_second {
+                guard.record_temp_rate(ts, v);
+            }
+            guard.record_blocked_sessions(ts, overview.blocked_sessions as f64);
+            guard.record_connections(ts, overview.connections as f64);
+        }
+    }
+
+    /// Fetch high-resolution history for a metric name; caller may downsample.
+    #[allow(dead_code)]
+    pub async fn get_history_series(&self, metric: &str) -> Option<Vec<TimePoint>> {
+        let guard = self.inner.metric_history.read().await;
+        guard.series(metric).map(|s| s.to_vec())
+    }
+
+    /// Append an alert lifecycle event; enforce bounded capacity.
+    #[allow(dead_code)]
+    pub async fn push_alert_event(&self, event: AlertEvent) {
+        const MAX_EVENTS: usize = 200; // retention cap
+        let mut guard = self.inner.alert_events.write().await;
+        guard.push(event);
+        if guard.len() > MAX_EVENTS {
+            let overflow = guard.len() - MAX_EVENTS;
+            guard.drain(0..overflow);
+        }
+    }
+
+    /// List recent alert events (chronological order, oldest first).
+    #[allow(dead_code)]
+    pub async fn list_alert_events(&self) -> Vec<AlertEvent> {
+        self.inner.alert_events.read().await.clone()
+    }
+
+    pub async fn snapshot_metric_history(&self) -> MetricHistory {
+        self.inner.metric_history.read().await.clone()
+    }
+
+    pub async fn replace_metric_history<F: FnOnce(&mut MetricHistory)>(&self, f: F) {
+        let mut mh = self.inner.metric_history.write().await;
+        f(&mut mh);
+    }
+
+    pub async fn replace_alert_events(&self, events: Vec<AlertEvent>) {
+        let mut ae = self.inner.alert_events.write().await;
+        *ae = events;
+    }
+
     pub async fn record_loop_success(&self, loop_name: &str) {
         let mut guard = self.inner.loop_health.write().await;
         let entry = guard
@@ -563,6 +785,7 @@ impl SharedState {
         entry.last_error = Some(error);
     }
 
+    #[allow(dead_code)]
     pub async fn loop_health(&self) -> Vec<LoopHealth> {
         self.inner
             .loop_health
@@ -593,4 +816,84 @@ impl SharedState {
             }
         })
     }
+}
+
+/// Compute diff between previous and current alert sets and generate AlertEvent start/clear events.
+async fn diff_alerts_and_record(
+    state: &SharedState,
+    prev_warn: &[String],
+    prev_crit: &[String],
+    overview: &OverviewSnapshot,
+) {
+    use std::collections::HashSet;
+    let prev_warn_set: HashSet<&String> = prev_warn.iter().collect();
+    let prev_crit_set: HashSet<&String> = prev_crit.iter().collect();
+    let curr_warn_set: HashSet<&String> = overview.open_alerts.iter().collect();
+    let curr_crit_set: HashSet<&String> = overview.open_crit_alerts.iter().collect();
+
+    let started_warn: Vec<&String> = curr_warn_set.difference(&prev_warn_set).cloned().collect();
+    let cleared_warn: Vec<&String> = prev_warn_set.difference(&curr_warn_set).cloned().collect();
+    let started_crit: Vec<&String> = curr_crit_set.difference(&prev_crit_set).cloned().collect();
+    let cleared_crit: Vec<&String> = prev_crit_set.difference(&curr_crit_set).cloned().collect();
+
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+    static EVENT_ID: AtomicU64 = AtomicU64::new(50_000);
+    let now = Utc::now();
+
+    for msg in started_warn.iter().chain(started_crit.iter()) {
+        state
+            .push_alert_event(AlertEvent {
+                id: EVENT_ID.fetch_add(1, AtomicOrdering::Relaxed),
+                kind: classify_kind(msg),
+                message: (*msg).clone(),
+                severity: if overview.open_crit_alerts.contains(*msg) {
+                    "crit".into()
+                } else {
+                    "warn".into()
+                },
+                started_at: now,
+                cleared_at: None,
+            })
+            .await;
+    }
+
+    for msg in cleared_warn.iter().chain(cleared_crit.iter()) {
+        state
+            .push_alert_event(AlertEvent {
+                id: EVENT_ID.fetch_add(1, AtomicOrdering::Relaxed),
+                kind: classify_kind(msg),
+                message: (*msg).clone(),
+                severity: if prev_crit_set.contains(*msg) {
+                    "crit".into()
+                } else {
+                    "warn".into()
+                },
+                started_at: now,
+                cleared_at: Some(now),
+            })
+            .await;
+    }
+}
+
+fn classify_kind(message: &str) -> String {
+    let lower = message.to_ascii_lowercase();
+    for (needle, kind) in [
+        ("connections", "connections"),
+        ("longest transaction", "long_txn"),
+        ("longest blocked", "blocked"),
+        ("wal surge", "wal_surge"),
+        ("temp surge", "temp_surge"),
+        ("checkpoint thrash", "checkpoint"),
+        ("dead tuple backlog", "dead_tuples"),
+        ("autovac starvation", "autovac_starvation"),
+        ("replication lag", "replication_lag"),
+        ("wraparound", "wraparound"),
+        ("partition horizon", "partition_gap"),
+        ("stats stale", "stale_stats"),
+    ] {
+        if lower.contains(needle) {
+            return kind.to_string();
+        }
+    }
+    "other".into()
 }

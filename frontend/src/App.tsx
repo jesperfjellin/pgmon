@@ -27,7 +27,7 @@ import {
   WraparoundSnapshot,
   createPoller,
 } from "./api";
-import { Badge, Card, CardHeader, CardBody, MetricCard, Section, SqlSnippet } from "./components/ui";
+import { Badge, Card, CardHeader, CardBody, MetricCard, Section, SqlSnippet, formatPercentMaybe } from "./components/ui";
 
 const numberFormatter = new Intl.NumberFormat();
 
@@ -631,7 +631,7 @@ function StorageTab({ rows }: { rows: StorageEntry[] }) {
                     <td className="py-2 pr-4">{formatBytes(row.index_bytes)}</td>
                     <td className="py-2 pr-4">{formatBytes(row.toast_bytes)}</td>
                     <td className="py-2 pr-4">
-                      {row.dead_tuple_ratio !== undefined ? `${row.dead_tuple_ratio.toFixed(1)}%` : "—"}
+                      {formatPercentMaybe(row.dead_tuple_ratio)}
                     </td>
                     <td className="py-2 pr-4">
                       {row.estimated_bloat_bytes !== undefined && row.estimated_bloat_bytes !== null

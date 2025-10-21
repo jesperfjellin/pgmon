@@ -30,7 +30,9 @@ pub fn create_router(ctx: AppContext) -> Router {
         .route("/stale-stats", get(get_stale_stats))
         .route("/partitions", get(get_partitions))
         .route("/replication", get(get_replication))
-        .route("/wraparound", get(get_wraparound));
+        .route("/wraparound", get(get_wraparound))
+        .route("/alerts/history", get(get_alerts_history))
+        .route("/history/:metric", get(get_history));
 
     Router::new()
         .route("/healthz", get(get_healthz))
@@ -120,3 +122,90 @@ async fn get_wraparound(State(ctx): State<AppContext>) -> Json<crate::state::Wra
     let snapshots = ctx.state.get_snapshots().await;
     Json(snapshots.wraparound)
 }
+
+async fn get_alerts_history(
+    State(ctx): State<AppContext>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Json<Vec<crate::state::AlertEvent>> {
+    let limit: usize = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
+    let mut events = ctx.state.list_alert_events().await;
+    if events.len() > limit {
+        let start = events.len() - limit;
+        events = events[start..].to_vec();
+    }
+    Json(events)
+}
+
+#[derive(serde::Serialize)]
+struct HistoryResponse {
+    metric: String,
+    points: Vec<crate::state::TimePoint>,
+    downsampled: bool,
+}
+
+/// Returns high-resolution time series for a metric.
+/// Query params:
+///   ?window=24h | 1h | 6h (default 24h)
+///   ?max_points=1000 (downsample target)
+async fn get_history(
+    State(ctx): State<AppContext>,
+    axum::extract::Path(metric): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<HistoryResponse>, StatusCode> {
+    let window = params.get("window").map(String::as_str).unwrap_or("24h");
+    let max_points: usize = params
+        .get("max_points")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000);
+
+    let all_points = match ctx.state.get_history_series(&metric).await {
+        Some(series) => series,
+        None => return Err(StatusCode::NOT_FOUND),
+    };
+
+    // Window filter
+    let cutoff = cutoff_for_window(window).ok_or(StatusCode::BAD_REQUEST)?;
+    let filtered: Vec<_> = all_points.into_iter().filter(|p| p.ts >= cutoff).collect();
+
+    let (points, downsampled) = maybe_downsample(filtered, max_points);
+    Ok(Json(HistoryResponse {
+        metric,
+        points,
+        downsampled,
+    }))
+}
+
+fn cutoff_for_window(window: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    let now = chrono::Utc::now();
+    match window {
+        "1h" => Some(now - chrono::Duration::hours(1)),
+        "6h" => Some(now - chrono::Duration::hours(6)),
+        "24h" => Some(now - chrono::Duration::hours(24)),
+        _ => None,
+    }
+}
+
+pub fn maybe_downsample(
+    points: Vec<crate::state::TimePoint>,
+    max_points: usize,
+) -> (Vec<crate::state::TimePoint>, bool) {
+    if points.len() <= max_points || max_points == 0 {
+        return (points, false);
+    }
+    let step = (points.len() as f64 / max_points as f64).ceil() as usize;
+    if step <= 1 {
+        return (points, false);
+    }
+    let mut sampled = Vec::with_capacity(max_points);
+    for (idx, p) in points.into_iter().enumerate() {
+        if idx % step == 0 {
+            sampled.push(p);
+        }
+    }
+    (sampled, true)
+}
+
+// Inline downsampling test moved to integration test under tests/history_downsampling.rs

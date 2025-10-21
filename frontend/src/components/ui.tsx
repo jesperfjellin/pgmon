@@ -151,3 +151,23 @@ export function SqlSnippet({ sql }: SqlSnippetProps) {
     </details>
   );
 }
+
+// ---------- Formatting Helpers ----------
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  let v = bytes;
+  let unitIndex = -1;
+  while (v >= 1024 && unitIndex < units.length - 1) {
+    v /= 1024;
+    unitIndex++;
+  }
+  return `${v.toFixed(1)} ${units[unitIndex]}`;
+}
+
+export function formatPercentMaybe(value: number | null | undefined, digits = 1): string {
+  if (value === null || value === undefined || Number.isNaN(value)) {
+    return "—";
+  }
+  return `${value.toFixed(digits)}%`;
+}

@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod http;
 mod metrics;
+mod persistence;
 mod poller;
 mod state;
 
@@ -18,6 +19,7 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use crate::app::AppContext;
+use crate::persistence::{PersistenceConfig, load_if_exists, spawn_flush_loop};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about = "pgmon — PostgreSQL DBA Health Platform")]
@@ -46,6 +48,13 @@ async fn main() -> anyhow::Result<()> {
     let pool = db::create_pool(&config).await?;
 
     let ctx = AppContext::new(config, pool, metrics, state);
+
+    // Persistence: load existing state then spawn flush loop if configured.
+    if let Some(persist_cfg) = PersistenceConfig::from_env() {
+        load_if_exists(&persist_cfg, &ctx.state).await;
+        // Fire-and-forget background flush loop.
+        let _flush_handle = spawn_flush_loop(persist_cfg, ctx.state.clone());
+    }
 
     ctx.state
         .update_overview_with(|overview| {
