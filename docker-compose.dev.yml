@@ -1,0 +1,44 @@
+services:
+  dev:
+    build:
+      context: .
+      target: dev
+    env_file:
+      - .env
+    working_dir: /workspace
+    command: ["bash"]
+    volumes:
+      - .:/workspace
+      - cargo-registry:/usr/local/cargo/registry
+      - cargo-git:/usr/local/cargo/git
+      - target-cache:/workspace/target
+
+  pgmon:
+    build:
+      context: .
+      target: runtime
+    image: pgmon:local
+    env_file:
+      - .env
+    ports:
+      - "8181:8181"
+    volumes:
+      - ./config.pgmon.yaml:/config/pgmon.yaml:ro
+      - pgmon-history:/var/lib/pgmon
+
+  frontend:
+    image: node:20-alpine
+    working_dir: /workspace/frontend
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    volumes:
+      - .:/workspace
+    ports:
+      - "5173:5173"
+    environment:
+      - NODE_ENV=development
+
+volumes:
+  cargo-registry:
+  cargo-git:
+  target-cache:
+  pgmon-history:

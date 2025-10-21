@@ -1,5 +1,4 @@
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::time::sleep;
@@ -17,6 +16,9 @@ struct PersistedState {
 struct PersistedMetricHistory {
     tps: Vec<TimePoint>,
     qps: Vec<TimePoint>,
+    mean_latency_ms: Vec<TimePoint>,
+    latency_p95_ms: Vec<TimePoint>,
+    latency_p99_ms: Vec<TimePoint>,
     wal_bytes_per_second: Vec<TimePoint>,
     temp_bytes_per_second: Vec<TimePoint>,
     blocked_sessions: Vec<TimePoint>,
@@ -28,6 +30,9 @@ impl From<&MetricHistory> for PersistedMetricHistory {
         Self {
             tps: m.tps.clone(),
             qps: m.qps.clone(),
+            mean_latency_ms: m.mean_latency_ms.clone(),
+            latency_p95_ms: m.latency_p95_ms.clone(),
+            latency_p99_ms: m.latency_p99_ms.clone(),
             wal_bytes_per_second: m.wal_bytes_per_second.clone(),
             temp_bytes_per_second: m.temp_bytes_per_second.clone(),
             blocked_sessions: m.blocked_sessions.clone(),
@@ -82,6 +87,9 @@ async fn restore_into_state(state: &SharedState, persisted: PersistedState) {
         .replace_metric_history(|mh| {
             mh.tps = persisted.metric_history.tps;
             mh.qps = persisted.metric_history.qps;
+            mh.mean_latency_ms = persisted.metric_history.mean_latency_ms;
+            mh.latency_p95_ms = persisted.metric_history.latency_p95_ms;
+            mh.latency_p99_ms = persisted.metric_history.latency_p99_ms;
             mh.wal_bytes_per_second = persisted.metric_history.wal_bytes_per_second;
             mh.temp_bytes_per_second = persisted.metric_history.temp_bytes_per_second;
             mh.blocked_sessions = persisted.metric_history.blocked_sessions;

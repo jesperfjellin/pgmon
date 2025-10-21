@@ -117,6 +117,15 @@ export interface WraparoundRelation {
   tx_age: number;
 }
 
+export interface AlertEvent {
+  id: number;
+  kind: string;
+  message: string;
+  severity: string; // warn | crit
+  started_at: number; // epoch seconds
+  cleared_at?: number | null; // epoch seconds
+}
+
 const DEFAULT_REFRESH_MS = 30_000;
 
 async function fetchJson<T>(path: string, signal?: AbortSignal): Promise<T> {
@@ -178,6 +187,9 @@ export const api = {
   storage: "/api/v1/storage",
   partitions: "/api/v1/partitions",
   wraparound: "/api/v1/wraparound",
+  alertsHistory: "/api/v1/alerts/history",
+  metricHistory: (metric: string) => `/api/v1/history/${metric}`,
+  overviewHistory: `/api/v1/history/overview`,
 };
 export interface BlockingEvent {
   blocked_pid: number;

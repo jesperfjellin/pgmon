@@ -1,4 +1,5 @@
 import React from "react";
+import { ResponsiveContainer, AreaChart, Area } from "recharts";
 
 // ---------- Helper Functions ----------
 function classNames(...xs: (string | false | null | undefined)[]) {
@@ -22,7 +23,7 @@ export function Badge({ children, tone = "slate" }: BadgeProps) {
     gray: "bg-gray-100 text-gray-700",
   };
   return (
-    <span className={classNames("px-2 py-0.5 text-xs rounded-full font-medium", tones[tone])}>
+    <span className={classNames("px-2 py-0.5 text-xs rounded-full font-medium shadow-sm", tones[tone])}>
       {children}
     </span>
   );
@@ -36,7 +37,7 @@ interface CardProps {
 
 export function Card({ children, className = "" }: CardProps) {
   return (
-    <div className={classNames("bg-white/70 backdrop-blur border border-slate-200 rounded-2xl shadow-sm", className)}>
+    <div className={classNames("bg-white/70 backdrop-blur border border-slate-200 rounded-2xl shadow-sm transition-colors", className)}>
       {children}
     </div>
   );
@@ -75,11 +76,12 @@ interface MetricCardProps {
   value: string | number;
   unit?: string;
   icon?: React.ReactNode;
-  tone?: "blue" | "green" | "amber" | "rose" | "violet" | "slate";
+  tone?: "blue" | "green" | "amber" | "rose" | "violet" | "slate" | "red";
   status?: "warn" | "crit";
+  series?: { value: number }[]; // expects pre-shaped small series
 }
 
-export function MetricCard({ title, value, unit, icon, tone = "blue", status }: MetricCardProps) {
+export function MetricCard({ title, value, unit, /* icon unused now */ tone = "blue", status, series }: MetricCardProps) {
   const toneColor = {
     blue: "text-sky-600",
     green: "text-emerald-600",
@@ -87,27 +89,47 @@ export function MetricCard({ title, value, unit, icon, tone = "blue", status }: 
     rose: "text-rose-600",
     violet: "text-violet-600",
     slate: "text-slate-600",
+    red: "text-rose-600",
   }[tone];
+  const strokeMap: Record<string,string> = {
+    blue: '#0ea5e9',
+    green: '#10b981',
+    amber: '#f59e0b',
+    rose: '#ef4444',
+    violet: '#8b5cf6',
+    slate: '#64748b',
+    red: '#ef4444'
+  };
+  const stroke = strokeMap[tone] || '#0ea5e9';
+
+  // SVG gradient id must be a valid XML ID (no spaces). Use a slugified title.
+  const gradientId = `mc-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-spark`;
 
   return (
     <Card>
-      <CardBody>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            {icon && <div className={classNames("p-2 rounded-xl bg-slate-50", toneColor)}>{icon}</div>}
-            <div>
-              <div className="text-xs text-slate-500">{title}</div>
-              <div className="text-lg sm:text-xl font-semibold text-slate-900 flex items-center gap-2">
-                {value}
-                {unit && <span className="text-slate-400 text-sm">{unit}</span>}
-                {status && (
-                  <Badge tone={status === "crit" ? "red" : "yellow"}>
-                    {status}
-                  </Badge>
-                )}
-              </div>
-            </div>
+      <CardBody className="py-3">
+        <div className="flex flex-col items-center text-center gap-1">
+          <div className="text-xs text-slate-500">{title}</div>
+          <div className="text-lg sm:text-xl font-semibold text-slate-900 flex items-center gap-2">
+            {value}
+            {unit && <span className="text-slate-400 text-sm">{unit}</span>}
+            {status && <Badge tone={status === "crit" ? "red" : "yellow"}>{status}</Badge>}
           </div>
+          {series && series.length > 0 && (
+            <div className="w-full mt-1 h-10">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={series} margin={{ left: 0, right: 0, top: 2, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor={stroke} stopOpacity={0.35} />
+                      <stop offset="95%" stopColor={stroke} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <Area type="monotone" dataKey="value" stroke={stroke} fill={`url(#${gradientId})`} strokeWidth={2} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
         </div>
       </CardBody>
     </Card>

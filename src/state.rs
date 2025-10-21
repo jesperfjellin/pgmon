@@ -243,17 +243,6 @@ pub struct OverviewSnapshot {
     pub blocking_events: Vec<BlockingEvent>,
     pub longest_transaction_seconds: Option<f64>,
     pub longest_blocked_seconds: Option<f64>,
-    pub tps: Option<f64>,
-    pub qps: Option<f64>,
-    pub mean_latency_ms: Option<f64>,
-    pub latency_p95_ms: Option<f64>,
-    pub latency_p99_ms: Option<f64>,
-    pub wal_bytes_per_second: Option<f64>,
-    pub checkpoints_timed: Option<i64>,
-    pub checkpoints_requested: Option<i64>,
-    pub checkpoint_requested_ratio: Option<f64>,
-    pub checkpoint_mean_interval_seconds: Option<f64>,
-    pub temp_bytes_per_second: Option<f64>,
     pub open_alerts: Vec<String>,
     pub open_crit_alerts: Vec<String>,
     #[serde(skip)]
@@ -271,17 +260,6 @@ impl Default for OverviewSnapshot {
             blocking_events: Vec::new(),
             longest_transaction_seconds: None,
             longest_blocked_seconds: None,
-            tps: None,
-            qps: None,
-            mean_latency_ms: None,
-            latency_p95_ms: None,
-            latency_p99_ms: None,
-            wal_bytes_per_second: None,
-            checkpoints_timed: None,
-            checkpoints_requested: None,
-            checkpoint_requested_ratio: None,
-            checkpoint_mean_interval_seconds: None,
-            temp_bytes_per_second: None,
             open_alerts: Vec::new(),
             open_crit_alerts: Vec::new(),
             _internal_alert_hash: 0,
@@ -701,27 +679,7 @@ impl SharedState {
     pub async fn record_history_points(&self, overview: &OverviewSnapshot) {
         let mut guard = self.inner.metric_history.write().await;
         if let Some(ts) = overview.generated_at {
-            if let Some(v) = overview.tps {
-                guard.record_tps(ts, v);
-            }
-            if let Some(v) = overview.qps {
-                guard.record_qps(ts, v);
-            }
-            if let Some(v) = overview.mean_latency_ms {
-                guard.record_mean_latency(ts, v);
-            }
-            if let Some(v) = overview.latency_p95_ms {
-                guard.record_latency_p95(ts, v);
-            }
-            if let Some(v) = overview.latency_p99_ms {
-                guard.record_latency_p99(ts, v);
-            }
-            if let Some(v) = overview.wal_bytes_per_second {
-                guard.record_wal_rate(ts, v);
-            }
-            if let Some(v) = overview.temp_bytes_per_second {
-                guard.record_temp_rate(ts, v);
-            }
+            // Only record series derivable from snapshot numeric counts that remain.
             guard.record_blocked_sessions(ts, overview.blocked_sessions as f64);
             guard.record_connections(ts, overview.connections as f64);
         }

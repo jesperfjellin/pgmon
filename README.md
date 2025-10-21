@@ -513,6 +513,32 @@ Run the dev server with:
 cargo run -- --config pgmon.yaml
 ```
 
+### Hot Reload Development (docker-compose.dev.yml)
+
+For iterative UI + backend development without rebuilding the production image, use the dev compose file:
+
+```bash
+docker compose -f docker-compose.dev.yml up --build
+```
+
+Services:
+- `backend`: Rust dev container running `cargo watch -x run` (auto-restarts on source changes) exposing API at `http://localhost:8181`.
+- `frontend`: Node Vite dev server with HMR at `http://localhost:5173`.
+
+The regular runtime image still serves the built UI; during development you can hit the API on 8181 while loading the live UI from 5173. When ready for a production bundle, run:
+
+```bash
+docker compose build pgmon && docker compose up pgmon
+```
+
+To stop the dev stack:
+
+```bash
+docker compose -f docker-compose.dev.yml down
+```
+
+Optional: if `cargo watch` is missing it will be installed automatically in the dev container startup command.
+
 ### Implemented backend surface (March 2025)
 
 - **Startup:** read-only pool validation (`SET default_transaction_read_only`) and cluster label bootstrapped from config.

@@ -292,7 +292,7 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
 
     // After overview changes, record high-resolution history points.
     let latest = ctx.state.get_snapshots().await.overview; // clone snapshot
-    ctx.state.record_history_points(&latest).await;
+    ctx.state.record_history_points(&latest).await; // still records connections & blocked sessions history
 
     ctx.metrics.set_overview_metrics(
         ctx.cluster_name(),

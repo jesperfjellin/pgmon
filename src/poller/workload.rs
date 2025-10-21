@@ -102,8 +102,9 @@ async fn update_workload_overview(ctx: &AppContext) -> Result<()> {
     .await?;
     let temp_bytes = Some(temp_bytes_row.try_get::<i64, _>("temp_bytes")?);
 
+    let collected_at = Utc::now();
     let sample = WorkloadSample {
-        collected_at: Utc::now(),
+        collected_at,
         total_xacts: total_xacts as f64,
         total_calls,
         total_time_ms,
@@ -118,26 +119,30 @@ async fn update_workload_overview(ctx: &AppContext) -> Result<()> {
         summary.latency_p95_ms = latency.p95_ms;
         summary.latency_p99_ms = latency.p99_ms;
 
-        ctx.state
-            .update_overview_with(|overview| {
-                overview.tps = summary.tps;
-                overview.qps = summary.qps;
-                overview.mean_latency_ms = summary.mean_latency_ms;
-                overview.latency_p95_ms = latency.p95_ms;
-                overview.latency_p99_ms = latency.p99_ms;
-                overview.wal_bytes_per_second = summary.wal_bytes_per_second;
-                overview.checkpoints_timed = summary.checkpoints_timed_total;
-                overview.checkpoints_requested = summary.checkpoints_requested_total;
-                overview.checkpoint_requested_ratio = summary.checkpoint_requested_ratio;
-                overview.checkpoint_mean_interval_seconds =
-                    summary.checkpoint_mean_interval_seconds;
-                overview.temp_bytes_per_second = summary.temp_bytes_per_second;
-            })
-            .await;
+        // KPI numeric fields have been removed from OverviewSnapshot; history is recorded directly via state.record_workload_sample and metrics exported separately.
 
         // Capture post-update overview snapshot into history buffers.
-        let latest = ctx.state.get_snapshots().await.overview;
-        ctx.state.record_history_points(&latest).await;
+        // Record connection & blocked history via hot_path loop only; workload loop no longer pushes KPI snapshot values.
+
+        // Record workload-derived KPI series directly into MetricHistory so the
+        // /history/overview endpoint exposes them. Previously removed when
+        // snapshot numeric fields were pruned; without these pushes the frontend
+        // sees empty series (Connections show because hot_path still records).
+        if summary.tps.is_some()
+            || summary.qps.is_some()
+            || summary.mean_latency_ms.is_some()
+            || summary.latency_p95_ms.is_some()
+            || summary.latency_p99_ms.is_some()
+        {
+            let ts = collected_at;
+            ctx.state.replace_metric_history(|mh| {
+                if let Some(v) = summary.tps { mh.record_tps(ts, v); }
+                if let Some(v) = summary.qps { mh.record_qps(ts, v); }
+                if let Some(v) = summary.mean_latency_ms { mh.record_mean_latency(ts, v); }
+                if let Some(v) = summary.latency_p95_ms { mh.record_latency_p95(ts, v); }
+                if let Some(v) = summary.latency_p99_ms { mh.record_latency_p99(ts, v); }
+            }).await;
+        }
 
         ctx.metrics.set_workload_metrics(
             ctx.cluster_name(),

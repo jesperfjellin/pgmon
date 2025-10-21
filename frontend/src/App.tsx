@@ -17,6 +17,7 @@ import {
   AutovacuumEntry,
   BlockingEvent,
   BloatSample,
+  AlertEvent,
   OverviewSnapshot,
   PartitionSlice,
   ReplicaLag,
@@ -28,6 +29,8 @@ import {
   createPoller,
 } from "./api";
 import { Badge, Card, CardHeader, CardBody, MetricCard, Section, SqlSnippet, formatPercentMaybe } from "./components/ui";
+import { useRef } from 'react';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 
 const numberFormatter = new Intl.NumberFormat();
 
@@ -354,10 +357,12 @@ function usePollingData<T>(path: string, initial: T, intervalMs?: number) {
 const tabs = [
   { key: "overview", label: "Overview", icon: <Gauge className="h-4 w-4" /> },
   { key: "workload", label: "Workload", icon: <Activity className="h-4 w-4" /> },
-  { key: "autovac", label: "Autovacuum", icon: <Zap className="h-4 w-4" /> },
+  { key: "autovac", label: "Autovac", icon: <Zap className="h-4 w-4" /> },
   { key: "storage", label: "Storage", icon: <Layers className="h-4 w-4" /> },
-  { key: "bloat", label: "Bloat Deep", icon: <BarChart2 className="h-4 w-4" /> },
+  { key: "bloat", label: "Bloat", icon: <BarChart2 className="h-4 w-4" /> },
+  { key: "history", label: "History", icon: <Activity className="h-4 w-4" /> },
   { key: "stale-stats", label: "Stale Stats", icon: <Clock4 className="h-4 w-4" /> },
+  { key: "indexes", label: "Indexes", icon: <Layers className="h-4 w-4" /> },
   { key: "partitions", label: "Partitions", icon: <BarChart2 className="h-4 w-4" /> },
   { key: "replication", label: "Replication", icon: <Server className="h-4 w-4" /> },
   { key: "alerts", label: "Alerts", icon: <AlertTriangle className="h-4 w-4" /> },
@@ -366,77 +371,195 @@ const tabs = [
 
 // ---------- Panel Components ----------
 function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
-  if (!overview) {
-    return (
-      <div className="space-y-4">
-        <p className="text-sm text-slate-500">Loading...</p>
-      </div>
-    );
+  // History-derived KPI series
+  const [loaded, setLoaded] = useState(false);
+  const [series, setSeries] = useState<{
+    connections: { ts: number; value: number }[];
+    tps: { ts: number; value: number }[];
+    qps: { ts: number; value: number }[];
+    mean_latency_ms: { ts: number; value: number }[];
+    latency_p95_ms: { ts: number; value: number }[];
+    latency_p99_ms: { ts: number; value: number }[];
+    blocked_sessions: { ts: number; value: number }[];
+  }>({
+    connections: [],
+    tps: [],
+    qps: [],
+    mean_latency_ms: [],
+    latency_p95_ms: [],
+    latency_p99_ms: [],
+    blocked_sessions: [],
+  });
+  // Track last timestamp to enable incremental polling
+  const lastTsRef = useRef<number | null>(null);
+
+  // Initial fetch + polling of combined overview history
+  useEffect(() => {
+    let stopped = false;
+    const shape = (pts: any[]) => pts.map(p => ({ ts: p.ts * 1000, value: p.value }));
+    const fullLoad = async () => {
+      try {
+        const resp = await fetch(`${api.overviewHistory}?window=1h&max_points=300`);
+        const json = await resp.json();
+        if (stopped) return;
+        setSeries({
+          connections: shape(json.connections || []),
+          tps: shape(json.tps || []),
+          qps: shape(json.qps || []),
+            mean_latency_ms: shape(json.mean_latency_ms || []),
+            latency_p95_ms: shape(json.latency_p95_ms || []),
+            latency_p99_ms: shape(json.latency_p99_ms || []),
+            blocked_sessions: shape(json.blocked_sessions || []),
+        });
+        // Establish lastTs from maximum across all returned series
+        const allTs = [
+          ...((json.connections || []).map((p:any)=>p.ts)),
+          ...((json.tps || []).map((p:any)=>p.ts)),
+          ...((json.qps || []).map((p:any)=>p.ts)),
+          ...((json.mean_latency_ms || []).map((p:any)=>p.ts)),
+          ...((json.latency_p95_ms || []).map((p:any)=>p.ts)),
+          ...((json.latency_p99_ms || []).map((p:any)=>p.ts)),
+          ...((json.blocked_sessions || []).map((p:any)=>p.ts)),
+        ];
+        lastTsRef.current = allTs.length ? Math.max(...allTs) * 1000 : null; // store ms
+        setLoaded(true);
+      } catch (e) {
+        console.error('overview history fetch failed', e);
+      }
+    };
+    const incremental = async () => {
+      if (lastTsRef.current == null) {
+        return fullLoad();
+      }
+      try {
+        const sinceSeconds = Math.floor(lastTsRef.current / 1000);
+        const resp = await fetch(`${api.overviewHistory}?window=1h&max_points=300&since=${sinceSeconds}`);
+        const json = await resp.json();
+        if (stopped) return;
+        // Partial response may return empty arrays; merge only new points
+        const merge = (curr: {ts:number;value:number}[], incoming: any[]) => {
+          if (!Array.isArray(incoming) || incoming.length === 0) return curr;
+          const mapped = shape(incoming);
+          // Drop any duplicates (ts equality) in case of race
+          const existingSet = new Set(curr.map(p => p.ts));
+          const appended = mapped.filter(p => !existingSet.has(p.ts));
+          return [...curr, ...appended];
+        };
+        setSeries(prev => ({
+          connections: merge(prev.connections, json.connections || []),
+          tps: merge(prev.tps, json.tps || []),
+          qps: merge(prev.qps, json.qps || []),
+          mean_latency_ms: merge(prev.mean_latency_ms, json.mean_latency_ms || []),
+          latency_p95_ms: merge(prev.latency_p95_ms, json.latency_p95_ms || []),
+          latency_p99_ms: merge(prev.latency_p99_ms, json.latency_p99_ms || []),
+          blocked_sessions: merge(prev.blocked_sessions, json.blocked_sessions || []),
+        }));
+        const newTs = [
+          ...((json.connections || []).map((p:any)=>p.ts)),
+          ...((json.tps || []).map((p:any)=>p.ts)),
+          ...((json.qps || []).map((p:any)=>p.ts)),
+          ...((json.mean_latency_ms || []).map((p:any)=>p.ts)),
+          ...((json.latency_p95_ms || []).map((p:any)=>p.ts)),
+          ...((json.latency_p99_ms || []).map((p:any)=>p.ts)),
+          ...((json.blocked_sessions || []).map((p:any)=>p.ts)),
+        ];
+        if (newTs.length) {
+          const newest = Math.max(...newTs) * 1000;
+          if (newest > (lastTsRef.current ?? 0)) {
+            lastTsRef.current = newest;
+          }
+        }
+      } catch (e) {
+        console.error('overview incremental history fetch failed', e);
+      }
+    };
+    fullLoad();
+    const id = setInterval(incremental, 15_000);
+    return () => { stopped = true; clearInterval(id); };
+  }, []);
+
+  // Derive current values from last history point.
+  const last = <T extends { ts: number; value: number }[]>(xs: T) => (xs.length ? xs[xs.length - 1].value : undefined);
+  const currentConnections = last(series.connections);
+  const currentTps = last(series.tps);
+  const currentQps = last(series.qps);
+  const currentMeanLatency = last(series.mean_latency_ms);
+  const currentP95Latency = last(series.latency_p95_ms);
+  const currentP99Latency = last(series.latency_p99_ms);
+  const currentBlocked = last(series.blocked_sessions);
+
+  // Move hooks before early return to comply with Rules of Hooks
+  const blockingEvents = overview?.blocking_events ?? EMPTY_BLOCKING_EVENTS;
+  const topBlocking = useMemo<BlockingEvent[]>(() => blockingEvents.slice(0, 8), [blockingEvents]);
+
+  // Need overview for non-KPI lists (alerts, blocking chains, max_connections for ratio).
+  if (!overview || !loaded) {
+    return <div className="text-sm text-slate-500">Loading history…</div>;
   }
 
-  const connectionRatio =
-    overview.max_connections > 0
-      ? overview.connections / overview.max_connections
-      : 0;
-  const longestTx = overview.longest_transaction_seconds ?? 0;
+  const connectionRatio = overview.max_connections > 0 && currentConnections !== undefined
+    ? currentConnections / overview.max_connections
+    : 0;
   const longestBlocked = overview.longest_blocked_seconds ?? 0;
-  const blockedWarn = overview.blocked_sessions > 0 || longestBlocked >= BLOCKED_WARN;
+  const blockedWarn = (currentBlocked ?? 0) > 0 || longestBlocked >= BLOCKED_WARN;
   const blockedCrit = longestBlocked >= BLOCKED_CRIT;
-  const blockingEvents = overview.blocking_events ?? [];
-  const topBlocking = useMemo<BlockingEvent[]>(
-    () => blockingEvents.slice(0, 8),
-    [blockingEvents],
-  );
 
   return (
     <div className="space-y-6">
       {/* KPI cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3">
+  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7 gap-3">
         <MetricCard
           title="Connections"
-          value={`${overview.connections}/${overview.max_connections}`}
-          icon={<Database className="h-5 w-5" />}
+          value={currentConnections !== undefined ? `${Math.round(currentConnections)}/${overview.max_connections}` : '–'}
           tone="violet"
           status={
             connectionRatio >= CONNECTION_CRIT
-              ? "crit"
+              ? 'crit'
               : connectionRatio >= CONNECTION_WARN
-              ? "warn"
+              ? 'warn'
               : undefined
           }
+          series={series.connections.map(p => ({ value: p.value }))}
         />
         <MetricCard
           title="TPS"
-          value={overview.tps ? overview.tps.toFixed(1) : "–"}
-          icon={<Activity className="h-5 w-5" />}
+          value={currentTps !== undefined ? currentTps.toFixed(1) : '–'}
           tone="green"
+          series={series.tps.map(p => ({ value: p.value }))}
         />
         <MetricCard
           title="QPS"
-          value={overview.qps ? overview.qps.toFixed(1) : "–"}
-          icon={<Activity className="h-5 w-5" />}
+          value={currentQps !== undefined ? currentQps.toFixed(1) : '–'}
           tone="blue"
+          series={series.qps.map(p => ({ value: p.value }))}
         />
         <MetricCard
           title="Mean Latency"
-          value={overview.mean_latency_ms ? overview.mean_latency_ms.toFixed(1) : "–"}
+          value={currentMeanLatency !== undefined ? currentMeanLatency.toFixed(1) : '–'}
           unit="ms"
-          icon={<Gauge className="h-5 w-5" />}
           tone="amber"
+          series={series.mean_latency_ms.map(p => ({ value: p.value }))}
         />
         <MetricCard
           title="p95 Latency"
-          value={overview.latency_p95_ms ? overview.latency_p95_ms.toFixed(1) : "–"}
+          value={currentP95Latency !== undefined ? currentP95Latency.toFixed(1) : '–'}
           unit="ms"
-          icon={<Gauge className="h-5 w-5" />}
           tone="rose"
+          series={series.latency_p95_ms.map(p => ({ value: p.value }))}
+        />
+        <MetricCard
+          title="p99 Latency"
+          value={currentP99Latency !== undefined ? currentP99Latency.toFixed(1) : '–'}
+          unit="ms"
+          tone="red"
+          series={series.latency_p99_ms.map(p => ({ value: p.value }))}
         />
         <MetricCard
           title="Blocked Sessions"
-          value={overview.blocked_sessions}
-          icon={<Lock className="h-5 w-5" />}
+          value={currentBlocked !== undefined ? Math.round(currentBlocked) : '–'}
           tone="slate"
-          status={blockedCrit ? "crit" : blockedWarn ? "warn" : undefined}
+          status={blockedCrit ? 'crit' : blockedWarn ? 'warn' : undefined}
+          series={series.blocked_sessions.map(p => ({ value: p.value }))}
         />
       </div>
 
@@ -652,6 +775,13 @@ function StorageTab({ rows }: { rows: StorageEntry[] }) {
 }
 
 function BloatTab({ samples }: { samples: BloatSample[] }) {
+  // Move hooks before early return to comply with Rules of Hooks
+  const topSamples = useMemo(() => samples.slice(0, 20), [samples]);
+  const hasAdvancedFields = useMemo(
+    () => topSamples.some((s) => s.dead_tuple_count != null),
+    [topSamples]
+  );
+
   if (samples.length === 0) {
     return (
       <div className="space-y-4">
@@ -667,9 +797,6 @@ function BloatTab({ samples }: { samples: BloatSample[] }) {
       </div>
     );
   }
-
-  const topSamples = useMemo(() => samples.slice(0, 20), [samples]);
-  const hasAdvancedFields = topSamples.some((s) => s.dead_tuple_count != null);
 
   return (
     <div className="space-y-4">
@@ -781,6 +908,16 @@ function StaleStatsTab({ rows }: { rows: StaleStatEntry[] }) {
 }
 
 function PartitionsTab({ slices }: { slices: PartitionSlice[] }) {
+  // Move hooks before early return to comply with Rules of Hooks
+  const sortedSlices = useMemo(() => {
+    return [...slices].sort((a, b) => {
+      if (a.missing_future_partition === b.missing_future_partition) {
+        return a.parent.localeCompare(b.parent);
+      }
+      return a.missing_future_partition ? -1 : 1;
+    });
+  }, [slices]);
+
   if (slices.length === 0) {
     return (
       <div className="space-y-4">
@@ -793,15 +930,6 @@ function PartitionsTab({ slices }: { slices: PartitionSlice[] }) {
       </div>
     );
   }
-
-  const sortedSlices = useMemo(() => {
-    return [...slices].sort((a, b) => {
-      if (a.missing_future_partition === b.missing_future_partition) {
-        return a.parent.localeCompare(b.parent);
-      }
-      return a.missing_future_partition ? -1 : 1;
-    });
-  }, [slices]);
 
   return (
     <div className="space-y-4">
@@ -879,8 +1007,17 @@ function ReplicationTab({ replicas }: { replicas: ReplicaLag[] }) {
 }
 
 function AlertsTab({ overview }: { overview: OverviewSnapshot | null }) {
-  const warnAlerts = overview?.open_alerts ?? [];
-  const critAlerts = overview?.open_crit_alerts ?? [];
+  // Alert timeline polling
+  const [alertEvents, setAlertEvents] = useState<AlertEvent[]>([]);
+  useEffect(() => {
+    return createPoller<AlertEvent[]>(api.alertsHistory + '?limit=200', setAlertEvents, console.error, 30000);
+  }, []);
+
+  // Derive current active alerts from timeline (those without cleared_at)
+  const activeWarnAlerts = alertEvents.filter(e => e.severity === 'warn' && e.cleared_at == null).map(e => e.message);
+  const activeCritAlerts = alertEvents.filter(e => e.severity === 'crit' && e.cleared_at == null).map(e => e.message);
+  const warnAlerts = activeWarnAlerts;
+  const critAlerts = activeCritAlerts;
 
   return (
     <div className="space-y-4">
@@ -966,6 +1103,73 @@ function WraparoundTab({ snapshot }: { snapshot: WraparoundSnapshot }) {
   );
 }
 
+function HistoryCharts() {
+  const [points, setPoints] = useState<{ ts: number; tps: number; qps: number }[]>([]);
+
+  useEffect(() => {
+    // Poll both endpoints sequentially and merge by timestamp (assumes identical ts ordering)
+    const poll = async () => {
+      try {
+        const tpsResp = await fetch(api.metricHistory('tps') + '?window=6h&max_points=300');
+        const qpsResp = await fetch(api.metricHistory('qps') + '?window=6h&max_points=300');
+        const tpsData = await tpsResp.json();
+        const qpsData = await qpsResp.json();
+        const tpsPoints: { ts: number; value: number }[] = (tpsData.points || []).map((p: any) => ({ ts: p.ts * 1000, value: p.value }));
+        const qpsPoints: { ts: number; value: number }[] = (qpsData.points || []).map((p: any) => ({ ts: p.ts * 1000, value: p.value }));
+        // Merge by index (simplest) – could be by ts if lengths differ
+        const merged: { ts: number; tps: number; qps: number }[] = tpsPoints.map((p, i) => ({ ts: p.ts, tps: p.value, qps: qpsPoints[i]?.value ?? NaN }));
+        setPoints(merged);
+      } catch (e) {
+        console.error('history poll error', e);
+      }
+    };
+    poll();
+    const id = setInterval(poll, 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <div className="space-y-4">
+      <Section title="History (6h)" subtitle="TPS & QPS" icon={<Activity className="h-5 w-5 text-slate-500" />} />
+      <Card>
+        <CardBody>
+          <div className="h-64 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={points} margin={{ left: 8, right: 16, top: 8, bottom: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="ts" type="number" domain={['auto','auto']} tickFormatter={(ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} />
+                <YAxis />
+                <Tooltip labelFormatter={(ts) => new Date(ts as number).toLocaleTimeString()} />
+                <Legend />
+                <Line type="monotone" dataKey="tps" stroke="#0ea5e9" strokeWidth={2} dot={false} name="TPS" />
+                <Line type="monotone" dataKey="qps" stroke="#6366f1" strokeWidth={2} dot={false} name="QPS" />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </CardBody>
+      </Card>
+      <SqlSnippet sql={`GET ${api.metricHistory('tps')}?window=6h&max_points=300`} />
+    </div>
+  );
+}
+
+export default App;
+
+// Stable default arrays to prevent infinite re-renders
+const EMPTY_BLOCKING_EVENTS: BlockingEvent[] = [];
+const EMPTY_ALERTS: string[] = [];
+
+// Stable default object to prevent infinite re-renders
+const EMPTY_OVERVIEW: OverviewSnapshot = {
+  cluster: '',
+  connections: 0,
+  max_connections: 0,
+  blocked_sessions: 0,
+  blocking_events: EMPTY_BLOCKING_EVENTS,
+  open_alerts: EMPTY_ALERTS,
+  open_crit_alerts: EMPTY_ALERTS,
+};
+
 function App() {
   const [active, setActive] = useState("overview");
 
@@ -1006,17 +1210,17 @@ function App() {
       {/* Body */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 grid grid-cols-1 lg:grid-cols-[230px_1fr] gap-6">
         {/* Sidebar */}
-        <aside className="lg:sticky lg:top-16 self-start">
+        <aside className="lg:sticky lg:top-16 self-start space-y-3">
           <Card>
-            <CardBody>
-              <nav className="flex flex-col gap-1">
-                {tabs.map((t) => (
+            <CardBody className="py-3">
+              <nav className="flex flex-col gap-1 text-sm">
+                {tabs.map(t => (
                   <button
                     key={t.key}
                     onClick={() => setActive(t.key)}
                     className={classNames(
-                      "w-full flex items-center gap-2 px-3 py-2 rounded-xl text-sm",
-                      active === t.key ? "bg-sky-50 text-sky-700 border border-sky-100" : "hover:bg-slate-50 text-slate-700"
+                      'w-full group flex items-center gap-2 px-3 py-2 rounded-xl text-sm transition-colors',
+                      active === t.key ? 'bg-sky-50 text-sky-700 border border-sky-100 shadow-sm' : 'hover:bg-slate-50 text-slate-700'
                     )}
                   >
                     {t.icon}
@@ -1026,27 +1230,37 @@ function App() {
               </nav>
             </CardBody>
           </Card>
-          <div className="mt-4 text-xs text-slate-500 px-2">
-            UI refreshes every 30s · Prom metrics at <code className="font-mono">/metrics</code>
-          </div>
+          <div className="text-xs text-slate-500 px-1">UI refresh ~15s · Prom metrics at <code className="font-mono">/metrics</code></div>
         </aside>
-
-        {/* Main Content */}
-        <main>
-          {active === "overview" && <OverviewTab overview={overview} />}
-          {active === "workload" && <WorkloadTab queries={topQueries} />}
-          {active === "autovac" && <AutovacTab tables={autovacuum} />}
-          {active === "storage" && <StorageTab rows={storage} />}
-          {active === "bloat" && <BloatTab samples={bloatSamples} />}
-          {active === "stale-stats" && <StaleStatsTab rows={staleStats} />}
-          {active === "partitions" && <PartitionsTab slices={partitions} />}
-          {active === "replication" && <ReplicationTab replicas={replication} />}
-          {active === "alerts" && <AlertsTab overview={overview} />}
-          {active === "wraparound" && <WraparoundTab snapshot={wraparound} />}
+        <main className="space-y-6">
+          {active === 'overview' && <OverviewTab overview={overview ?? EMPTY_OVERVIEW} />}
+          {active === 'workload' && <WorkloadTab queries={topQueries} />}
+          {active === 'autovac' && <AutovacTab tables={autovacuum} />}
+          {active === 'storage' && <StorageTab rows={storage} />}
+          {active === 'bloat' && <BloatTab samples={bloatSamples} />}
+          {active === 'history' && <HistoryCharts />}
+          {active === 'stale-stats' && <StaleStatsTab rows={staleStats} />}
+          {active === 'replication' && <ReplicationTab replicas={replication} />}
+          {active === 'partitions' && <PartitionsTab slices={partitions} />}
+          {active === 'alerts' && <AlertsTab overview={overview} />}
+          {active === 'wraparound' && <WraparoundTab snapshot={wraparound} />}
+          {active === 'indexes' && (
+            <div className="space-y-4">
+              <Section title="Unused Indexes" icon={<Layers className="h-5 w-5 text-slate-500" />} />
+              <Card><CardBody>
+                {unusedIndexes.length === 0 ? <div className="text-sm text-slate-500">No unused indexes detected.</div> : (
+                  <table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500 border-b border-slate-100"><th className="py-2 pr-4">Relation</th><th className="py-2 pr-4">Index</th><th className="py-2 pr-4">Bytes</th></tr></thead><tbody>{unusedIndexes.map(ix => (
+                    <tr key={ix.relation+ix.index} className="border-b border-slate-50 hover:bg-slate-50/60"><td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{ix.relation}</td><td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{ix.index}</td><td className="py-2 pr-4">{formatBytes(ix.bytes)}</td></tr>
+                  ))}</tbody></table>
+                )}
+              </CardBody></Card>
+              <SqlSnippet sql={SQL_SNIPPETS.unusedIndexes} />
+            </div>
+          )}
+          {/* legacy alias fallback */}
+          {active === 'stale' && <StaleStatsTab rows={staleStats} />}
         </main>
       </div>
     </div>
   );
 }
-
-export default App;

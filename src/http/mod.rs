@@ -33,6 +33,8 @@ pub fn create_router(ctx: AppContext) -> Router {
         .route("/wraparound", get(get_wraparound))
         .route("/alerts/history", get(get_alerts_history))
         .route("/history/:metric", get(get_history));
+        // Combined KPI history endpoint.
+    let api = api.route("/history/overview", get(get_overview_history));
 
     Router::new()
         .route("/healthz", get(get_healthz))
@@ -146,6 +148,21 @@ struct HistoryResponse {
     downsampled: bool,
 }
 
+#[derive(serde::Serialize)]
+struct OverviewHistoryResponse {
+    // Each series is already filtered + maybe downsampled.
+    tps: Vec<crate::state::TimePoint>,
+    qps: Vec<crate::state::TimePoint>,
+    mean_latency_ms: Vec<crate::state::TimePoint>,
+    latency_p95_ms: Vec<crate::state::TimePoint>,
+    latency_p99_ms: Vec<crate::state::TimePoint>,
+    connections: Vec<crate::state::TimePoint>,
+    blocked_sessions: Vec<crate::state::TimePoint>,
+    window: String,
+    downsampled: bool,
+    partial: bool, // true when filtered by `since` producing only incremental new points
+}
+
 /// Returns high-resolution time series for a metric.
 /// Query params:
 ///   ?window=24h | 1h | 6h (default 24h)
@@ -175,6 +192,68 @@ async fn get_history(
         metric,
         points,
         downsampled,
+    }))
+}
+
+/// Returns multiple KPI series in one call to reduce frontend round trips.
+/// Query params mirror single metric history:
+///   ?window=24h|6h|1h (default 1h for overview density)
+///   ?max_points=300 (downsample target shared across all series)
+async fn get_overview_history(
+    State(ctx): State<AppContext>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<OverviewHistoryResponse>, StatusCode> {
+    let window = params.get("window").map(String::as_str).unwrap_or("1h");
+    let max_points: usize = params
+        .get("max_points")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+    // Optional incremental cutoff: only return points with ts > since
+    let since_cutoff: Option<chrono::DateTime<chrono::Utc>> = params
+        .get("since")
+        .and_then(|v| v.parse::<i64>().ok())
+        .and_then(|secs| chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0));
+
+    let cutoff = cutoff_for_window(window).ok_or(StatusCode::BAD_REQUEST)?;
+    let history = ctx.state.snapshot_metric_history().await; // single lock clone.
+
+    // Build filtered + optional incremental slice.
+
+    let mut downsample_any = false;
+    let ds = |pts: Vec<crate::state::TimePoint>, max: usize, flag: &mut bool| {
+        let (sampled, down) = crate::http::maybe_downsample(pts, max);
+        if down { *flag = true; }
+        sampled
+    };
+
+    let effective_filter = |points: &[crate::state::TimePoint]| {
+        let base: Vec<_> = points.iter().filter(|p| p.ts >= cutoff).cloned().collect();
+        if let Some(since) = since_cutoff {
+            base.into_iter().filter(|p| p.ts > since).collect()
+        } else {
+            base
+        }
+    };
+
+    let tps = ds(effective_filter(&history.tps), max_points, &mut downsample_any);
+    let qps = ds(effective_filter(&history.qps), max_points, &mut downsample_any);
+    let mean_latency_ms = ds(effective_filter(&history.mean_latency_ms), max_points, &mut downsample_any);
+    let latency_p95_ms = ds(effective_filter(&history.latency_p95_ms), max_points, &mut downsample_any);
+    let latency_p99_ms = ds(effective_filter(&history.latency_p99_ms), max_points, &mut downsample_any);
+    let connections = ds(effective_filter(&history.connections), max_points, &mut downsample_any);
+    let blocked_sessions = ds(effective_filter(&history.blocked_sessions), max_points, &mut downsample_any);
+
+    Ok(Json(OverviewHistoryResponse {
+        tps,
+        qps,
+        mean_latency_ms,
+        latency_p95_ms,
+        latency_p99_ms,
+        connections,
+        blocked_sessions,
+        window: window.to_string(),
+        downsampled: downsample_any,
+        partial: since_cutoff.is_some(),
     }))
 }
 
