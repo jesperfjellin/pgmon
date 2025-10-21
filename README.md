@@ -657,3 +657,285 @@ Keep this section updated when pollers adopt new columns or extensions so contri
 * **Idle in txn** — session left in a transaction without commit/rollback; blocks vacuum.
 
 ---
+
+## 17) Frontend UX Design Vision
+
+### **Design Philosophy**
+
+The pgmon UI is evolving from a **functional data dump** to a **professional monitoring dashboard** while preserving **100% feature completeness**. The design prioritizes:
+
+1. **Information density** — All data accessible without scrolling marathons
+2. **Visual hierarchy** — Critical metrics prominent, details progressively disclosed
+3. **At-a-glance monitoring** — Sparklines, badges, and color coding for rapid assessment
+4. **Fail-fast transparency** — No hidden degradation; errors surfaced immediately
+5. **SQL visibility** — Every panel links to the underlying query for debugging/learning
+
+**Guiding principle:** Expand the layout to fit our rich feature set—never sacrifice functionality for aesthetics.
+
+---
+
+### **Layout Structure**
+
+#### **Top Navigation Bar** (Sticky)
+- **Cluster badge** — Name, last refresh timestamp, health indicator
+- **Time range selector** — 15m / 1h / 6h / 24h / 7d (future: when time-series implemented)
+- **Quick actions** — Refresh, export, settings
+
+#### **Sidebar Navigation** (Fixed Left, 230px)
+Tabbed navigation replacing infinite scroll:
+```
+Overview       — KPIs, alerts, blocking chains, wraparound summary
+Workload       — Top queries with I/O ratios, latency breakdown
+Autovacuum     — Dead tuples, freshness, last vacuum/analyze
+Storage        — Largest relations, bloat analysis (exact mode), unused indexes
+Bloat Deep     — Dedicated bloat panel (exact/approx modes, dead/live tuple counts)
+Stale Stats    — Tables needing analyze, hours since last stats update
+Partitions     — Horizon gaps, cadence detection, suggested ranges
+Replication    — Replica lag (time/bytes), streaming state
+Alerts         — Active alerts with severity, thresholds, time in state
+Wraparound     — Database/relation age, ETA calculations, safety badges
+Settings       — Display preferences, alert thresholds (future)
+```
+
+#### **Main Content Area** (Responsive Grid)
+- Card-based layout with rounded corners, shadows, glass-morphism effects
+- Responsive grid: 1 column (mobile) → 2-3 columns (desktop)
+- Collapsible SQL snippets under each panel
+
+---
+
+### **Component Patterns**
+
+#### **MetricCard** (Small Statistic with Sparkline)
+```tsx
+<MetricCard
+  title="TPS"
+  value={7.4}
+  series={last48Points}
+  icon={<Activity />}
+  tone="green"  // green|blue|amber|rose|violet|slate
+/>
+```
+- 6 MetricCards in Overview: Connections, TPS, QPS, Mean Latency, P95, Blocked Sessions
+- Mini sparkline (36px tall) shows trend without opening detail view
+
+#### **Card** (Standard Panel Container)
+```tsx
+<Card>
+  <CardHeader title="Top Queries" icon={<Activity />} actions={<Badge>157 queries</Badge>} />
+  <CardBody>
+    {/* Table, chart, or detail content */}
+  </CardBody>
+</Card>
+```
+
+#### **Badge** (Status/Tag)
+- **Color coding:** green (healthy), yellow (warning), red (critical), gray (info), purple (internal)
+- **Use cases:** Alert severity, table type (`_timescaledb_*`), health status, mode indicators (`exact mode`)
+
+#### **Data Tables**
+- Sticky headers
+- Hover highlighting
+- Sortable columns (future)
+- Search/filter (where applicable)
+- Read % bar charts inline for cache hit visualization
+
+---
+
+### **Technology Stack**
+
+#### **Current (Implemented)**
+- **React 18** — Component framework
+- **TypeScript** — Type safety
+- **Vite** — Build tool (fast HMR)
+- **CSS** — Custom styles (minimal, clean)
+
+#### **Planned Additions**
+- **Tailwind CSS** — Utility-first styling, consistent design tokens
+  - Rationale: Rapid prototyping, maintainable spacing/color system
+  - Config: Custom palette matching pgmon brand (sky blues, slate grays)
+- **lucide-react** — Icon library (tree-shakeable, 24KB gzipped)
+  - Replaces custom SVGs with professional, consistent iconography
+- **Recharts** — Chart library (when time-series backend ready)
+  - Rationale: Declarative, responsive, works well with React
+  - Use cases: TPS/QPS trends, latency percentiles over time, WAL growth
+
+#### **Explicitly Avoided**
+- Heavy component libraries (Material-UI, Ant Design) — Too opinionated, bloated
+- Client-side state management (Redux, Zustand) — Polling API is sufficient
+- CSS-in-JS runtime (styled-components, emotion) — Performance overhead
+
+---
+
+### **Information Architecture**
+
+#### **Overview Tab** — Executive Dashboard
+- **6 KPI MetricCards** (with sparklines when time-series available)
+- **Active Alerts** — Severity badges, time in state, threshold transparency
+- **Blocking Chains** — PID mappings, wait duration, optional query snippets
+- **Wraparound Summary** — Worst database/relation age with ETA badges ("Safe - 2,847 years")
+- **2 Charts** (future): TPS/QPS trend, Latency (mean/p95/p99) area chart
+
+#### **Workload Tab** — Query Performance
+- **Top Queries Table**:
+  - Query ID (monospace, truncated)
+  - Calls, Total Time, Mean Latency
+  - **Read %** — Cache hit ratio with inline bar chart (green >95%, yellow 80-95%, red <80%)
+  - Shared Blocks Read/Hit
+- **2 Charts** (future): Total time distribution, Mean latency by query
+- **Search/Filter** — By query ID prefix
+- **SQL Snippet** — Collapsible, copy button
+
+#### **Bloat Deep Tab** — Advanced Analysis
+- **Mode indicator** — Badge showing "approx mode" or "exact mode"
+- **Conditional columns**:
+  - **Always:** Relation, Table Bytes, Free Bytes, Free %
+  - **Exact mode only:** Dead Tuples, Dead %, Live Tuples, Tuple Density %
+- **Internal table badges** — Gray label for `_timescaledb_*` to reduce alarm
+- **Sorting** — By free %, dead %, table bytes (future)
+- **Actionable insights** — Tooltip: "40% free + 0 dead = needs VACUUM FULL, not regular VACUUM"
+
+#### **Stale Stats Tab**
+- **Table:** Relation, Hours Since Analyze, Last Analyze, Last Autoanalyze, Live Tuples
+- **Tooltip for "never"** — "Below autoanalyze threshold (~50 rows + 10% scale factor)"
+- **Threshold badges** — Yellow (12h+), red (24h+), gray (<50 rows)
+
+#### **Partitions Tab**
+- **Table:** Parent, Children, Cadence, Latest Upper Bound, Suggested Next Range, Gap (seconds), Status
+- **Status badges** — Green (healthy), yellow (approaching gap), red (gap detected)
+- **Advisory notes** — "Observed ~1d cadence; next partition should cover 2025-01-15 → 2025-01-16"
+
+#### **Settings Tab** (Future)
+- Display preferences (time format, refresh interval)
+- Alert threshold overrides (UI editing of config.yaml values)
+- Theme toggle (light/dark mode)
+
+---
+
+### **Color Coding Standards**
+
+#### **Status Colors**
+- **Green** (`emerald-*`) — Healthy, safe, success
+- **Yellow** (`amber-*`) — Warning, monitor, attention needed
+- **Red** (`rose-*`) — Critical, danger, immediate action
+- **Gray** (`slate-*`) — Info, disabled, internal/system
+- **Blue** (`sky-*`) — Neutral metric, brand color
+- **Purple** (`violet-*`) — Special state (e.g., exact mode)
+
+#### **Metric Tones** (for MetricCards)
+- **Connections** — Violet (infrastructure)
+- **TPS/QPS** — Green/Blue (throughput)
+- **Latency** — Amber/Rose (performance concern)
+- **Blocked Sessions** — Slate (contention, ideally zero)
+
+---
+
+### **Responsive Breakpoints**
+
+```css
+/* Mobile first */
+sm:  640px   /* 1 column → 2 columns */
+md:  768px   /* Sidebar collapses to hamburger (future) */
+lg:  1024px  /* 2 columns → 3 columns, sidebar always visible */
+xl:  1280px  /* 6 KPI cards in single row */
+```
+
+---
+
+### **Future Enhancements** (Requires Backend Changes)
+
+#### **Time-Series Collection** (Backend)
+```rust
+// In SharedState
+pub struct MetricHistory {
+    max_points: usize,  // Ring buffer size (e.g., 1000 points)
+    tps: VecDeque<TimePoint>,
+    qps: VecDeque<TimePoint>,
+    latency_mean: VecDeque<TimePoint>,
+    latency_p95: VecDeque<TimePoint>,
+    latency_p99: VecDeque<TimePoint>,
+    wal_bytes_per_sec: VecDeque<TimePoint>,
+    // ...
+}
+
+#[derive(Serialize)]
+struct TimePoint {
+    timestamp: DateTime<Utc>,
+    value: f64,
+}
+
+// New API endpoint
+GET /api/v1/history?metric=tps&duration=1h
+```
+
+#### **Live Updates via WebSocket** (Optional)
+- Current: 30s polling with `/api/v1/*` endpoints
+- Future: Server-sent events or WebSocket for sub-second updates on critical metrics
+- Use case: Real-time blocking chain detection during incidents
+
+#### **Drill-Down Views**
+- Click query ID → Full query text, execution plan (via `auto_explain` logs), per-DB breakdown
+- Click relation → Detailed bloat analysis, index usage, partition info
+
+#### **Export/Share**
+- "Copy SQL" buttons next to all queries
+- "Export to CSV" for tables
+- "Share snapshot" — Generate shareable link with current metric state (future: requires backend storage)
+
+---
+
+### **Implementation Phases**
+
+#### **Phase 1: Visual Refresh** (No Backend Changes, ~4 hours)
+- ✅ Add Tailwind CSS + lucide-react
+- ✅ Implement Card, CardHeader, CardBody components
+- ✅ Sidebar navigation with tabs (keep all existing panels)
+- ✅ Badge components for status/severity
+- ✅ Improve table styling (sticky headers, hover states)
+- ✅ Add "Read %" column to Top Queries (data already in backend)
+- ✅ Internal table badges (`_timescaledb_*` → gray label)
+
+#### **Phase 2: Enhanced Metadata** (~3 hours)
+- ✅ Wraparound ETA calculation + safety badges
+- ✅ Tooltip for "never" in autovacuum (threshold explanation)
+- ✅ Alert threshold transparency (show calculation on hover)
+- ✅ Partition cadence human-readable formatting
+
+#### **Phase 3: Time-Series Backend** (~5 hours)
+- 🔲 Ring buffer for metric history in `SharedState`
+- 🔲 `/api/v1/history` endpoint
+- 🔲 Retention policy (keep last 24h in memory, optionally persist)
+
+#### **Phase 4: Charts & Sparklines** (~3 hours)
+- 🔲 Recharts integration
+- 🔲 MetricCard sparklines (36px area charts)
+- 🔲 Overview dashboard: TPS/QPS + Latency charts
+- 🔲 Workload: Query performance trends
+
+---
+
+### **Design Mockup Reference**
+
+A React/Tailwind mockup demonstrating the visual direction is available (not committed to repo). Key takeaways:
+- Clean, modern aesthetic with glass-morphism cards
+- Professional spacing and typography
+- Responsive grid layout
+- Consistent icon usage
+
+**Adaptation rule:** The mockup provides styling inspiration, but pgmon's **full feature set takes precedence**. If a feature doesn't fit the mockup, expand the mockup—don't remove the feature.
+
+---
+
+### **Accessibility & Performance**
+
+- **Keyboard navigation** — Tab order respects visual hierarchy, Escape closes modals
+- **Screen reader support** — ARIA labels on icons, semantic HTML
+- **Color blindness** — Status never conveyed by color alone (icons + text reinforce)
+- **Bundle size target** — <200KB gzipped for initial load (Tailwind + lucide-react + Recharts)
+- **Render budget** — 60fps on tables <1000 rows; virtualization for larger datasets (future)
+
+---
+
+**This design document is a living spec.** As new monitoring features are added, the UI structure expands to accommodate them—never at the expense of data visibility or actionable insights.
+
+---
