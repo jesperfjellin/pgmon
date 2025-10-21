@@ -4,7 +4,7 @@ use std::time::Duration;
 use tokio::time::sleep;
 use tracing::{error, info, warn};
 
-use crate::state::{AlertEvent, MetricHistory, SharedState, TimePoint};
+use crate::state::{AlertEvent, MetricHistory, SharedState, TimePoint, DailyMetricSummary, WeeklyMetricSummary};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedState {
@@ -23,6 +23,10 @@ struct PersistedMetricHistory {
     temp_bytes_per_second: Vec<TimePoint>,
     blocked_sessions: Vec<TimePoint>,
     connections: Vec<TimePoint>,
+    #[serde(default)]
+    daily: Vec<DailyMetricSummary>,
+    #[serde(default)]
+    weekly: Vec<WeeklyMetricSummary>,
 }
 
 impl From<&MetricHistory> for PersistedMetricHistory {
@@ -37,6 +41,8 @@ impl From<&MetricHistory> for PersistedMetricHistory {
             temp_bytes_per_second: m.temp_bytes_per_second.clone(),
             blocked_sessions: m.blocked_sessions.clone(),
             connections: m.connections.clone(),
+            daily: m.daily.clone(),
+            weekly: m.weekly.clone(),
         }
     }
 }
@@ -94,6 +100,8 @@ async fn restore_into_state(state: &SharedState, persisted: PersistedState) {
             mh.temp_bytes_per_second = persisted.metric_history.temp_bytes_per_second;
             mh.blocked_sessions = persisted.metric_history.blocked_sessions;
             mh.connections = persisted.metric_history.connections;
+            mh.daily = persisted.metric_history.daily;
+            mh.weekly = persisted.metric_history.weekly;
         })
         .await;
 
