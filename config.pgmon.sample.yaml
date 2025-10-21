@@ -28,6 +28,15 @@ limits:
   # Number of days ahead to examine partition boundaries.
   partition_horizon_days: 7
 
+bloat:
+  # Bloat sampling mode: "approx" (pgstattuple_approx, fast),
+  # "exact" (pgstattuple, slower but accurate), or "detailed" (pageinspect, most detailed).
+  sampling_mode: "approx"
+  # Number of largest tables to analyze with advanced bloat sampling.
+  top_n_tables: 10
+  # Enable pageinspect for heap-level fragment analysis (requires pageinspect extension).
+  enable_pageinspect: false
+
 alerts:
   connections_warn: 0.80
   connections_crit: 0.95

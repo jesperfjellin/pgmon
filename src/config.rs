@@ -21,6 +21,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub limits: Limits,
     #[serde(default)]
+    pub bloat: BloatConfig,
+    #[serde(default)]
     pub alerts: AlertThresholds,
     #[serde(default)]
     pub notifiers: Notifiers,
@@ -41,6 +43,7 @@ impl Default for AppConfig {
             dsn: String::new(),
             sample_intervals: SampleIntervals::default(),
             limits: Limits::default(),
+            bloat: BloatConfig::default(),
             alerts: AlertThresholds::default(),
             notifiers: Notifiers::default(),
             http: HttpConfig::default(),
@@ -141,6 +144,40 @@ impl Default for Limits {
             top_indexes: Self::default_top_indexes(),
             top_queries: Self::default_top_queries(),
             partition_horizon_days: Self::default_partition_horizon_days(),
+        }
+    }
+}
+
+/// Bloat sampling configuration for advanced analysis.
+#[derive(Debug, Clone, Deserialize)]
+pub struct BloatConfig {
+    /// Sampling mode: "approx" (pgstattuple_approx), "exact" (pgstattuple), or "detailed" (pageinspect)
+    #[serde(default = "BloatConfig::default_sampling_mode")]
+    pub sampling_mode: String,
+    /// Number of top tables to analyze with advanced bloat sampling
+    #[serde(default = "BloatConfig::default_top_n_tables")]
+    pub top_n_tables: u32,
+    /// Enable pageinspect-based heap-level analysis (requires pageinspect extension)
+    #[serde(default)]
+    pub enable_pageinspect: bool,
+}
+
+impl BloatConfig {
+    fn default_sampling_mode() -> String {
+        "approx".to_string()
+    }
+
+    const fn default_top_n_tables() -> u32 {
+        10
+    }
+}
+
+impl Default for BloatConfig {
+    fn default() -> Self {
+        Self {
+            sampling_mode: Self::default_sampling_mode(),
+            top_n_tables: Self::default_top_n_tables(),
+            enable_pageinspect: false,
         }
     }
 }
