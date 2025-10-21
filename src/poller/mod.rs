@@ -74,10 +74,8 @@ fn spawn_loop(
             "starting poller loop"
         );
 
-        if let Err(err) = poll_once(ctx.clone(), loop_name, budget, poll_fn).await {
-            error!(loop_name, error = ?err, "initial loop execution failed");
-        }
-
+        // tokio::time::interval() completes the first tick immediately,
+        // ensuring all loops execute on startup before waiting for the interval
         let mut ticker = time::interval(interval);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -107,6 +105,12 @@ async fn poll_once(
                     elapsed = ?elapsed,
                     budget = ?budget,
                     "loop exceeded budget"
+                );
+            } else {
+                info!(
+                    loop_name,
+                    elapsed = ?elapsed,
+                    "loop completed successfully"
                 );
             }
             ctx.metrics.record_success(loop_name, true);
