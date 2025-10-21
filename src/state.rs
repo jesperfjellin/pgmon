@@ -152,6 +152,12 @@ pub struct BloatSample {
     pub table_bytes: i64,
     pub free_bytes: i64,
     pub free_percent: f64,
+    // Advanced fields from pgstattuple (exact) or pageinspect
+    pub dead_tuple_count: Option<i64>,
+    pub dead_tuple_percent: Option<f64>,
+    pub live_tuple_count: Option<i64>,
+    pub live_tuple_percent: Option<f64>,
+    pub tuple_density: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
