@@ -19,7 +19,7 @@ use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use crate::app::AppContext;
-use crate::persistence::{PersistenceConfig, load_if_exists, spawn_flush_loop};
+use crate::persistence::{PersistenceConfig, load_if_exists, spawn_flush_loop, flush_once};
 
 #[derive(Debug, Parser)]
 #[command(author, version, about = "pgmon — PostgreSQL DBA Health Platform")]
@@ -52,8 +52,29 @@ async fn main() -> anyhow::Result<()> {
     // Persistence: load existing state then spawn flush loop if configured.
     if let Some(persist_cfg) = PersistenceConfig::from_env() {
         load_if_exists(&persist_cfg, &ctx.state).await;
+        // Perform an immediate flush so state.json appears quickly and verify permissions.
+        match flush_once(&persist_cfg, &ctx.state).await {
+            Ok(_) => tracing::info!(dir=?persist_cfg.data_dir, "initial persistence flush complete"),
+            Err(err) => tracing::error!(error=?err, dir=?persist_cfg.data_dir, "initial persistence flush failed"),
+        }
         // Fire-and-forget background flush loop.
         let _flush_handle = spawn_flush_loop(persist_cfg, ctx.state.clone());
+        // Schedule an early second flush (~20s) to capture the first 1-2 hot_path + workload samples
+        // instead of waiting a full flush interval (default 60s). This improves observability right
+        // after startup and helps verify that history recording works.
+        let state_for_early = ctx.state.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+            if let Some(cfg) = PersistenceConfig::from_env() { // re-read env in case unchanged
+                if let Err(err) = flush_once(&cfg, &state_for_early).await {
+                    tracing::warn!(error=?err, "early second persistence flush failed");
+                } else {
+                    tracing::info!("early second persistence flush complete");
+                }
+            }
+        });
+    } else {
+        tracing::warn!("persistence disabled: PGMON_DATA_DIR not set");
     }
 
     ctx.state
@@ -79,6 +100,16 @@ async fn main() -> anyhow::Result<()> {
     }
 
     shutdown_pollers(poller_handles).await;
+
+    // Final persistence flush on shutdown so the latest workload & hot_path samples
+    // are durable even if they arrived just before termination.
+    if let Some(cfg) = PersistenceConfig::from_env() {
+        if let Err(err) = flush_once(&cfg, &ctx.state).await {
+            tracing::warn!(error=?err, "final persistence flush failed");
+        } else {
+            tracing::info!("final persistence flush complete");
+        }
+    }
 
     Ok(())
 }

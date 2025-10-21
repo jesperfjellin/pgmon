@@ -296,10 +296,12 @@ RUST_LOG=info
 
 The repo ships a starter config at `config.pgmon.sample.yaml`. `docker compose up pgmon` mounts it into the container as `/config/pgmon.yaml`; copy and edit this file (or set `PGMON_CONFIG`) to point the agent at your own Postgres cluster.
 
-- **Persistent history:** runtime images write metric and alert history JSON to `/var/lib/pgmon` (exposed via `PGMON_DATA_DIR`). The Compose file mounts the `pgmon-history` named volume there so samples survive restarts/upgrades; keep that volume when deploying in other orchestrators.
-  - Enable by setting `PGMON_DATA_DIR` (directory must be writable). Optional `PGMON_FLUSH_INTERVAL_SECS` controls flush cadence (default 60).
-  - File layout (initial): single `state.json` containing high-res ring buffer slices and recent alert events. Future versions may add rollup files (daily/weekly) as aggregation tasks mature.
-  - On startup: if `state.json` exists it is loaded before poller loops run; corrupted JSON is ignored with a warning.
+- **Persistent history:** runtime images write metric + alert history JSON to `/var/lib/pgmon` (exposed via `PGMON_DATA_DIR`). The Compose file mounts the `pgmon-history` named volume there so samples survive restarts/upgrades; keep that volume when deploying in other orchestrators.
+  - Enable by setting (or relying on image default) `PGMON_DATA_DIR` (dir must be writable by the `pgmon` user). Optional `PGMON_FLUSH_INTERVAL_SECS` controls background flush cadence (default 60).
+  - Immediate flush: on startup we perform a one-time flush after loading any prior state, so `state.json` appears within a few seconds instead of waiting a full interval—useful for smoke tests.
+  - Ownership gotcha: ensure the parent directory itself (not only subdirs) is owned/writable by `pgmon`; the runtime Dockerfile now `install -d -o pgmon -g pgmon /var/lib/pgmon` so this is handled automatically.
+  - File layout (initial): single `state.json` with high‑res ring buffers + recent alert events. Future rollups (daily/weekly) may add sibling files.
+  - Startup load: if `state.json` exists it is loaded before pollers run; corrupted JSON is ignored with a warning (agent proceeds with empty history).
 
 - `ui.hide_postgres_defaults` hides the built-in `postgres`/`template*` databases from wraparound panels, keeping the focus on user databases.
 

@@ -682,6 +682,13 @@ impl SharedState {
             // Only record series derivable from snapshot numeric counts that remain.
             guard.record_blocked_sessions(ts, overview.blocked_sessions as f64);
             guard.record_connections(ts, overview.connections as f64);
+            // Debug logging for early visibility into history recording cadence.
+            tracing::debug!(
+                ts = ts.timestamp(),
+                connections = overview.connections,
+                blocked_sessions = overview.blocked_sessions,
+                "recorded overview history points"
+            );
         }
     }
 

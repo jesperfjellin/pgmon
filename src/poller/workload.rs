@@ -115,6 +115,12 @@ async fn update_workload_overview(ctx: &AppContext) -> Result<()> {
     };
 
     if let Some(mut summary) = ctx.state.record_workload_sample(sample).await {
+        tracing::debug!(
+            tps=summary.tps,
+            qps=summary.qps,
+            mean_latency_ms=summary.mean_latency_ms,
+            "workload summary delta computed"
+        );
         let latency = fetch_latency_percentiles(ctx).await;
         summary.latency_p95_ms = latency.p95_ms;
         summary.latency_p99_ms = latency.p99_ms;
@@ -141,7 +147,31 @@ async fn update_workload_overview(ctx: &AppContext) -> Result<()> {
                 if let Some(v) = summary.mean_latency_ms { mh.record_mean_latency(ts, v); }
                 if let Some(v) = summary.latency_p95_ms { mh.record_latency_p95(ts, v); }
                 if let Some(v) = summary.latency_p99_ms { mh.record_latency_p99(ts, v); }
+                tracing::debug!(
+                    ts=ts.timestamp(),
+                    tps_points=mh.tps.len(),
+                    qps_points=mh.qps.len(),
+                    mean_latency_points=mh.mean_latency_ms.len(),
+                    p95_points=mh.latency_p95_ms.len(),
+                    p99_points=mh.latency_p99_ms.len(),
+                    "recorded workload history points"
+                );
             }).await;
+
+            // Ensure persistence sees newly created workload points promptly. We rely on periodic
+            // flush loop, but if it drifts, this guarantees durability within a few ms.
+            tokio::spawn({
+                let state_clone = ctx.state.clone();
+                async move {
+                    if let Some(cfg) = crate::persistence::PersistenceConfig::from_env() {
+                        if let Err(err) = crate::persistence::flush_once(&cfg, &state_clone).await {
+                            tracing::warn!(error=?err, "on-demand workload flush failed");
+                        } else {
+                            tracing::debug!("on-demand workload flush complete");
+                        }
+                    }
+                }
+            });
         }
 
         ctx.metrics.set_workload_metrics(

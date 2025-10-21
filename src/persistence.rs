@@ -106,7 +106,10 @@ pub async fn spawn_flush_loop(
 ) -> tokio::task::JoinHandle<()> {
     info!(dir=?cfg.data_dir, interval=?cfg.flush_interval, "starting persistence flush loop");
     tokio::spawn(async move {
+        let mut iteration: u64 = 0;
         loop {
+            iteration += 1;
+            tracing::debug!(iteration, "persistence flush loop tick");
             if let Err(err) = flush_once(&cfg, &state).await {
                 error!(error=?err, "flush failed");
             }
@@ -115,11 +118,21 @@ pub async fn spawn_flush_loop(
     })
 }
 
-async fn flush_once(cfg: &PersistenceConfig, state: &SharedState) -> anyhow::Result<()> {
+pub async fn flush_once(cfg: &PersistenceConfig, state: &SharedState) -> anyhow::Result<()> {
     tokio::fs::create_dir_all(&cfg.data_dir).await?;
     let path = state_file_path(&cfg.data_dir);
     let metric_history = state.snapshot_metric_history().await;
     let alert_events = state.list_alert_events().await;
+    tracing::debug!(
+        tps_points=metric_history.tps.len(),
+        qps_points=metric_history.qps.len(),
+        mean_latency_points=metric_history.mean_latency_ms.len(),
+        p95_points=metric_history.latency_p95_ms.len(),
+        p99_points=metric_history.latency_p99_ms.len(),
+        blocked_points=metric_history.blocked_sessions.len(),
+        connections_points=metric_history.connections.len(),
+        "flush snapshot lengths"
+    );
     let persisted = PersistedState {
         metric_history: (&metric_history).into(),
         alert_events,

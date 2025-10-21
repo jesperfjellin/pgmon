@@ -30,12 +30,14 @@ FROM debian:bookworm-slim AS runtime
 RUN useradd --uid 1000 --create-home pgmon \
     && apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates libssl3 \
+    && install -d -o pgmon -g pgmon /var/lib/pgmon \
     && install -d -o pgmon -g pgmon /var/lib/pgmon/history \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /home/pgmon
 COPY --from=build /app/target/release/pgmon /usr/local/bin/pgmon
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 COPY --from=web /web/dist /opt/pgmon/ui
 ENV PGMON_DATA_DIR=/var/lib/pgmon
-USER pgmon
 EXPOSE 8181
-ENTRYPOINT ["/usr/local/bin/pgmon"]
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
