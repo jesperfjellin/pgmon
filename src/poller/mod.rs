@@ -9,6 +9,7 @@ use tracing::{error, info, warn};
 
 use crate::app::AppContext;
 
+mod aggregation;
 mod hot_path;
 mod hourly;
 mod storage;
@@ -19,6 +20,7 @@ pub const HOT_PATH_LOOP: &str = "hot_path";
 pub const WORKLOAD_LOOP: &str = "workload";
 pub const STORAGE_LOOP: &str = "storage";
 pub const HOURLY_LOOP: &str = "hourly";
+pub const AGGREGATION_LOOP: &str = "aggregation";
 
 type LoopFuture = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
 type LoopFn = fn(AppContext) -> LoopFuture;
@@ -50,11 +52,18 @@ pub fn spawn_all(ctx: AppContext) -> Vec<JoinHandle<()>> {
             poll_storage,
         ),
         spawn_loop(
-            ctx,
+            ctx.clone(),
             HOURLY_LOOP,
             intervals.hourly,
             Duration::from_secs(60),
             poll_hourly,
+        ),
+        spawn_loop(
+            ctx,
+            AGGREGATION_LOOP,
+            Duration::from_secs(900), // 15 minutes
+            Duration::from_secs(30),  // 30 second budget
+            poll_aggregation,
         ),
     ]
 }
@@ -142,4 +151,8 @@ fn poll_storage(ctx: AppContext) -> LoopFuture {
 
 fn poll_hourly(ctx: AppContext) -> LoopFuture {
     Box::pin(async move { hourly::run(&ctx).await })
+}
+
+fn poll_aggregation(ctx: AppContext) -> LoopFuture {
+    Box::pin(async move { aggregation::run(&ctx).await })
 }
