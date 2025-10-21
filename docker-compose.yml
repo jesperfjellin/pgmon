@@ -23,7 +23,7 @@ services:
     ports:
       - "8181:8181"
     volumes:
-      - ./config.pgmon.sample.yaml:/config/pgmon.yaml:ro
+      - ./config.pgmon.yaml:/config/pgmon.yaml:ro
 
 volumes:
   cargo-registry:
