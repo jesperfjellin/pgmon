@@ -1,25 +1,29 @@
-# pgmon — PostgreSQL DBA Health Platform (Project Summary)
+# pgmon — PostgreSQL DBA Health Platform
 
 > **Elevator pitch:**
-> A read-only, containerized **Postgres agent** that polls core health metrics, exposes a **Prometheus `/metrics`** endpoint, ships a minimal **web UI**, and (optionally) sends **webhook alerts**. Built to keep *your* weather/IoT Postgres fast and safe, but architected so scale bottlenecks are compute, not design.
+> A read-only, containerized **Postgres agent** that polls core health metrics, exposes a **Prometheus `/metrics`** endpoint, and ships a **web UI** with time-series charts and alert tracking. Built to keep *your* weather/IoT Postgres fast and safe, but architected so scale bottlenecks are compute, not design.
+>
+> **Status:** ✅ **V1 FEATURE COMPLETE** — All core monitoring features implemented, including time-series backend, frontend visualizations, and 12-category alert engine.
 
 ---
 
 ## 1) Goals & Non-Goals
 
-**Goals (v1):**
+**Goals (v1) — ✅ FEATURE COMPLETE:**
 
 * **Zero-write** monitoring (uses `pg_monitor` only).
 * Lightweight **poller loops** (15s / 60s / 10m / hourly) with strict time budgets.
 * **Top queries**, **locks**, **autovacuum health**, **WAL/checkpoints**, **replication lag**, **wraparound safety**, **partition sanity**.
-* **Prometheus exporter** + tiny **web UI**. (Alert notifiers such as Slack/Email are planned for a later release once core surfaces stabilize.)
+* **Prometheus exporter** + **web UI** with time-series charts and alert timeline.
 * Clear **SQL transparency**: every UI panel links to its SQL.
+* **In-memory history** with disk persistence (ring buffers + daily/weekly aggregates).
 
 **Non-Goals (v1):**
 
 * No cross-cluster federation, no long-term TSDB inside the agent (use Prometheus for history).
 * No auto-tuning DDL/DML; **no writes** to user DBs.
 * No query text as high-cardinality labels (use `queryid`).
+* No Slack/Email notifiers (alerts surface via UI and Prometheus only).
 
 ---
 
@@ -541,7 +545,7 @@ docker compose -f docker-compose.dev.yml down
 
 Optional: if `cargo watch` is missing it will be installed automatically in the dev container startup command.
 
-### Implemented backend surface (March 2025)
+### V1 Implementation Status — ✅ COMPLETE
 
 - **Startup:** read-only pool validation (`SET default_transaction_read_only`) and cluster label bootstrapped from config.
 - **Hot path loop (15s):**
@@ -560,17 +564,24 @@ Optional: if `cargo watch` is missing it will be installed automatically in the 
   - Exposed through `/api/v1/storage` and Prometheus (`pg_relation_size_bytes`, `pg_relation_table_bytes`, `pg_relation_index_bytes`, `pg_relation_toast_bytes`, `pg_index_scans_total`, `pg_unused_index_bytes`).
 - **Hourly loop (1h):**
   - Replication lag (seconds/bytes) per replica, wraparound ages for databases + relations, partition inventory snapshot.
+  - Bloat sampling via `pgstattuple_approx()` (fast) or `pgstattuple()` (exact mode with dead/live tuple counts, density).
   - Stale-stat detection (time since analyze).
-  - Metrics exported via `pg_replication_lag_seconds/bytes`, `pg_wraparound_database_tx_age`, `pg_wraparound_relation_tx_age`, `pg_table_stats_stale_seconds`.
+  - Metrics exported via `pg_replication_lag_seconds/bytes`, `pg_wraparound_database_tx_age`, `pg_wraparound_relation_tx_age`, `pg_table_stats_stale_seconds`, `pg_relation_bloat_sample_*`.
+- **Aggregation loop (15m):**
+  - Daily metric aggregation (runs after UTC midnight, creates mean/max/min summaries).
+  - Weekly rollups (runs on Mondays, aggregates previous week's daily summaries).
+  - Automatic pruning (48h high-res, 30d daily, 365d weekly retention).
 - **Partition inventory:** aggregated per-parent summary including child count, oldest/newest partition bounds (RFC3339 where available), latest upper bound, latest partition name, derived `future_gap_seconds`, cadence estimation, and recommended next partition range. Served via `/api/v1/partitions`, exported via `pg_partition_missing_future` / `pg_partition_future_gap_seconds`, and emits warn-level alerts plus `alerts_total{partition_gap}` when gaps persist.
-- **REST API:** `/api/v1/overview`, `/autovacuum`, `/top-queries`, `/storage`, `/stale-stats`, `/partitions`, `/replication`, `/wraparound` serve current snapshots. Static UI served from `http.static_dir`.
+- **REST API:** `/api/v1/overview`, `/autovacuum`, `/top-queries`, `/storage`, `/bloat`, `/unused-indexes`, `/stale-stats`, `/partitions`, `/replication`, `/wraparound`, `/history/:metric`, `/history/overview`, `/alerts/history` serve current snapshots and time-series data. Static UI served from `http.static_dir`.
 - **Prometheus exporter:** `/metrics` renders all self-metrics plus collected gauges/counters; loop health histograms/counters track scrape duration, success, and errors (`pgmon_*`).
-- **Autovacuum backlog alerts:** dead tuples exceeding README thresholds emit overview warn/crit entries and maintain `pg_dead_tuple_backlog_alert{cluster,relation,severity}` (1=warn/2=crit).
+- **Alert engine:** 12 alert types with lifecycle tracking (connections, long_transaction, blocked_session, replication_lag, dead_tuples, autovacuum_starvation, partition_gap, wraparound, wal_surge, temp_surge, checkpoint_thrash, stale_stats). Events stored in ring buffer with started_at/cleared_at timestamps.
+- **Autovacuum backlog alerts:** dead tuples exceeding thresholds emit overview warn/crit entries and maintain `pg_dead_tuple_backlog_alert{cluster,relation,severity}` (1=warn/2=crit).
+- **Time-series persistence:** Optional disk writes via `PGMON_DATA_DIR`, atomic flush every 60s, startup load from `state.json`.
 - **Graceful shutdown:** listens for Ctrl+C/SIGTERM, aborts pollers, drains Axum server.
-- **Frontend:** Vite/React single-page UI polls backend every 30s, displaying overview KPIs, blocking chain detail, warn/crit alert lists, autovacuum freshness, top queries, replication lag, storage top-N (heap/index/TOAST split), unused index spotlight, partition gap alerts + horizon table, and wraparound safety summaries. Each panel includes a collapsible SQL snippet for transparency.
+- **Frontend:** Vite/React single-page UI with 12 tabs (Overview, Workload, Autovac, Storage, Bloat, History, Stale Stats, Indexes, Partitions, Replication, Alerts, Wraparound). Features Recharts integration with sparklines on KPI cards and full-size trend charts. Tailwind CSS styling, Lucide React icons, collapsible SQL snippets for transparency.
 - **Alert metrics:** Warn/crit events increment `alerts_total{cluster,kind,severity}`, enabling Prometheus alertmanager integrations while keeping severity history visible.
 
-The remaining work items from the spec (alert engines, notifier plumbing, frontend charts, partition gap detection, advanced bloat analysis, etc.) still need implementation.
+All v1 features are complete, including time-series backend, frontend charts, alert lifecycle tracking, bloat analysis (exact mode), and partition gap detection. See Section 14 for v2 roadmap focusing on frontend improvements and operational intelligence.
 
 **Kubernetes hints:** add `readOnlyRootFilesystem: true`, CPU/memory requests, liveness/readiness probes → `/healthz`.
 
@@ -656,29 +667,148 @@ Keep this section updated when pollers adopt new columns or extensions so contri
 
 ---
 
-## 13) MVP Milestones (build order)
+## 13) MVP Milestones — ✅ COMPLETE
 
-1. **Startup guardrails** (`pg_stat_statements` check) + `/healthz`
-2. **15s loop** (connections, long/idle xacts, locks, autovac, temp pulse)
-3. **60s loop** (statements, WAL/bgwriter, replication, freshness)
-4. **5–10m loop** (sizes, dead/live, index usage, partitions)
-5. **Hourly** (wraparound, stale stats)
-6. **Alerts** (internal engine + Slack/Email) - not prioritized
-7. **Minimal UI** (Overview, Autovacuum, Top queries, Storage/Idx, Partitions, Replication)
-8. **Prometheus parity** (all surfaced metrics exported 1:1)
+All v1 milestones have been delivered:
+
+1. ✅ **Startup guardrails** (`pg_stat_statements` check, read-only enforcement) + `/healthz`
+2. ✅ **15s loop** (connections, long/idle xacts, locks, autovac, temp pulse)
+3. ✅ **60s loop** (statements, WAL/bgwriter, replication, freshness)
+4. ✅ **10m loop** (sizes, dead/live, index usage)
+5. ✅ **Hourly loop** (wraparound, partitions, replication, bloat sampling, stale stats)
+6. ✅ **Alert engine** (internal lifecycle tracking, Prometheus counters, UI timeline)
+7. ✅ **Web UI** (12 tabs: Overview, Workload, Autovac, Storage, Bloat, History, Stale Stats, Indexes, Partitions, Replication, Alerts, Wraparound)
+8. ✅ **Prometheus parity** (all surfaced metrics exported 1:1)
+9. ✅ **Time-series backend** (ring buffers, daily/weekly aggregates, disk persistence)
+10. ✅ **Frontend charts** (Recharts integration with sparklines and full-size trend views)
 
 ---
 
-## 14) v2+ Roadmap (stretch)
+## 14) v2 Roadmap — Frontend & Operational Intelligence
 
-* **Autovacuum tuner** (per-table thresholds/scale factors from observed churn)
-* **Index advisor (safe)** via `hypopg` on top queries
-* ~~**Accurate bloat** sampling via `pgstattuple` / `pageinspect`~~ ✓ **Implemented** (exact mode via `pgstattuple`)
-* **Plan regression detector** (hash plan + latency deltas)
-* **Partitioning advisor** (period, future schedule, template DDL)
-* **Vacuum outcome tracer** (vacuum runs ↔ dead-tuple/size deltas)
-* **PgBouncer scrape**, **backup/PITR sanity** (`pg_stat_archiver`)
-* **Config drift** (snapshot/diff `pg_settings`)
+With v1 feature-complete, v2 focuses on **visual polish** and **actionable recommendations** to help DBAs make better operational decisions.
+
+**Philosophy Shift:** V1 shows *what's happening* (descriptive monitoring). V2 tells *what to do* (prescriptive recommendations).
+
+**Key Additions:**
+- **Command Generation** — Auto-suggest `VACUUM`, `ANALYZE`, `REINDEX`, `DROP INDEX` commands with context and rationale
+- **Cache & Buffer Analysis** — Visualize cache hit ratios, buffer pool composition, I/O efficiency (data already in backend!)
+- **Capacity Forecasting** — Predict disk-full, wraparound risk, connection saturation with ETAs
+- **Wait Event Dashboard** — Real-time bottleneck classification (CPU, I/O, locks)
+- **Autovacuum Advisor** — Per-table threshold recommendations based on observed churn rates
+- **Replication Slot Management** — Detect orphaned slots causing WAL accumulation and disk-full risks
+
+**Priority Tiers:**
+- **P0 (Must-Have):** VACUUM/ANALYZE command generation, cache hit ratio visualization, capacity forecasting (disk/XID)
+- **P1 (High Value):** Autovacuum advisor with threshold recommendations, replication slot monitoring, index recommendations (missing/duplicate)
+- **P2 (Nice-to-Have):** Wait event analysis, cache optimization advisor, pg_buffercache integration
+- **P3 (Future):** Webhook delivery (Slack/email/PagerDuty), anomaly detection, log parsing, query plan regression tracking
+
+### **Frontend Improvements**
+
+* **Enhanced Visualizations:**
+  - Heatmaps for query performance over time (identify daily/weekly patterns)
+  - Correlation charts (dead tuples vs vacuum frequency, checkpoint rate vs WAL growth)
+  - Stacked area charts for storage breakdown (heap/index/TOAST growth trends)
+  - Alert timeline visualization with severity escalation tracking
+
+* **Cache & Buffer Analysis:**
+  - Cache hit ratio trending per table (data already exists in `pg_stat_statements.shared_blks_read/hit`)
+  - `pg_buffercache` integration: heatmap showing which tables are "hot" in shared memory
+  - I/O efficiency dashboard: identify tables with low cache hit ratios (<99%)
+  - Buffer pool composition chart: visualize buffer usage by table/index
+
+* **Wait Event Dashboard:**
+  - Real-time histogram of `pg_stat_activity.wait_event_type` (Lock, IO, LWLock, Client, etc.)
+  - Long-wait detection: queries blocked >1s with drill-down to blocking chain
+  - Wait event trends over time (identify recurring bottlenecks)
+  - Bottleneck classification: CPU-bound, I/O-bound, or lock contention
+
+* **Drill-Down Views:**
+  - Click query ID → show full query text, execution plan samples, per-database breakdown
+  - Click relation → detailed bloat history, autovacuum run log, index usage over time
+  - Interactive blocking chain graph (visualize lock waits as a tree)
+
+* **User Experience:**
+  - Dark mode toggle
+  - Customizable dashboard layouts (drag-and-drop panels)
+  - Export to CSV/JSON for all tables
+  - Share snapshot links (freeze current state as shareable URL)
+  - Mobile-responsive improvements
+
+### **Operational Intelligence**
+
+* **Autovacuum Advisor:**
+  - Per-table threshold recommendations based on observed churn rates
+  - "Starving tables" detector: high churn + no recent vacuum → suggest manual `VACUUM ANALYZE`
+  - Cost/benefit analysis: dead tuple impact on query performance
+  - Safe parameter suggestions (`autovacuum_vacuum_scale_factor`, `autovacuum_vacuum_threshold`)
+
+* **Vacuum Outcome Tracker:**
+  - Correlate vacuum runs with dead-tuple/size deltas
+  - Identify ineffective vacuums (ran but dead tuples didn't drop → bloat needs `VACUUM FULL`)
+  - Track vacuum duration trends (detect tables needing tuning)
+
+* **Index Recommendations:**
+  - Highlight unused indexes consuming >500MB (auto-suggest `DROP INDEX` command)
+  - Detect duplicate indexes (same columns, different names)
+  - Identify missing indexes on frequently scanned tables (via `pg_stat_user_tables.seq_scan`)
+
+* **Partition Advisor:**
+  - Auto-generate partition DDL for tables approaching horizon
+  - Suggest retention policy (oldest partition candidates for `DROP`)
+  - Detect partition skew (uneven size distribution)
+
+* **Performance Insights:**
+  - Query latency regression detector (compare current mean vs 7-day baseline)
+  - Temp spill root cause analysis (which queries are spilling? suggest `work_mem` increase)
+  - Checkpoint tuning advisor (recommend `max_wal_size` adjustments based on thrash patterns)
+  - Wait event profiling: correlate wait events with slow queries, identify systemic bottlenecks
+
+* **Capacity Forecasting:**
+  - Table/index growth rate trending → "Table `events` will reach 100GB in 45 days"
+  - Disk usage projection → "Disk 80% full in 60 days at current growth rate"
+  - XID consumption rate → "Wraparound risk in 127 days (currently at 45% of autovacuum_freeze_max_age)"
+  - Connection saturation forecasting → "Max connections will be hit during peak hours in 2 weeks"
+  - Proactive alerts when forecasted events fall within critical windows
+
+* **Cache Optimization Advisor:**
+  - Flag high-I/O tables not resident in buffer cache → "Table `user_activity` has 12% cache hit ratio, consider increasing `shared_buffers` or adding indexes"
+  - Identify tables with excessive sequential scans → "Table `logs` scanned 1,247 times (0 index scans), suggest index on `timestamp` column"
+  - Buffer cache churn detection → "Frequently evicted tables indicate undersized shared_buffers"
+  - Recommend optimal buffer cache allocation per table based on access patterns
+
+* **Alert Management UI:**
+  - Alert acknowledgement and incident notes
+  - Alert suppression rules (silence known maintenance windows)
+  - Multi-severity escalation tracking (warn → crit after sustained threshold breach)
+  - Alert history filtering and search
+
+### **Infrastructure Observability**
+
+* **Replication Slot Management:**
+  - Monitor `pg_replication_slots` for inactive slots accumulating WAL
+  - Alert when slots are not advancing but retaining WAL files (disk-full risk)
+  - Track slot lag: `confirmed_flush_lsn` vs `pg_current_wal_lsn()` difference in bytes
+  - Safe-to-drop recommendations: "Slot `old_replica` hasn't advanced in 7 days, retaining 45GB WAL"
+  - Orphaned slot detection (no active connection for >24h)
+
+* **PgBouncer integration:** scrape pool stats, queue depth, client wait times
+* **Backup health:** track `pg_stat_archiver` for WAL shipping lag
+* **Config drift detector:** snapshot `pg_settings`, diff against baseline, alert on changes
+* **Extension version tracking:** detect stale `pg_stat_statements`, `pgstattuple`, etc.
+* **Wait event profiling:** long-term trends in wait event distribution, identify infrastructure bottlenecks (storage latency, network delays)
+
+### **Stretch Goals**
+
+* **Webhook alert delivery:** Slack, PagerDuty, email/SMTP, generic HTTP POST for external alerting integrations
+* **Plan regression detector:** capture execution plans via `auto_explain`, hash and compare
+* **Anomaly detection:** statistical baseline learning (Z-score, standard deviation) for automatic threshold tuning
+* **Log analysis integration:** parse PostgreSQL logs for errors, slow queries, deadlocks (pgBadger API or custom parser)
+* **OS metrics integration:** optional scraping of node_exporter for CPU, RAM, disk I/O correlation with database metrics
+* **Read replica topology map:** visualize replication chains, detect split-brain scenarios
+* **Cost-based index advisor:** integrate `hypopg` for "what-if" index suggestions on slow queries
+* **Query workload clustering:** group similar query patterns, identify N+1 query problems
 
 ---
 
@@ -889,47 +1019,36 @@ xl:  1280px  /* 6 KPI cards in single row */
 
 ---
 
-### **Future Enhancements** (Requires Backend Changes)
+### **Time-Series Backend** — ✅ IMPLEMENTED (v1)
 
-#### **Time-Series Collection** (Backend)
-```rust
-// In SharedState
-pub struct MetricHistory {
-    max_points: usize,  // Ring buffer size (e.g., 300 points ≈ 24h @ 5m, tune per loop)
-    tps: VecDeque<TimePoint>,
-    qps: VecDeque<TimePoint>,
-    latency_mean: VecDeque<TimePoint>,
-    latency_p95: VecDeque<TimePoint>,
-    latency_p99: VecDeque<TimePoint>,
-    wal_bytes_per_sec: VecDeque<TimePoint>,
-    // ...
-}
+The following features are now fully operational:
 
-#[derive(Serialize)]
-struct TimePoint {
-    timestamp: DateTime<Utc>,
-    value: f64,
-}
+#### **Metrics Collection**
+- Ring buffer storage with configurable max points (1,500 by default for ~48h retention)
+- Series tracked: tps, qps, mean_latency_ms, latency_p95_ms, latency_p99_ms, wal_bytes_per_second, temp_bytes_per_second, connections, blocked_sessions
+- Automatic overflow management (FIFO eviction)
 
-// New API endpoint
-GET /api/v1/history?metric=tps&duration=1h
-```
+#### **Historical Retention & Aggregation**
+- ✅ **High-resolution samples:** 48-hour retention with automatic pruning
+- ✅ **Daily aggregates:** 30-day retention (mean, max, min per metric)
+- ✅ **Weekly aggregates:** 365-day retention (mean, max, min per metric)
+- ✅ **Aggregation loop:** Runs every 15 minutes, processes daily summaries after UTC midnight, weekly on Mondays
+- ✅ **Disk persistence:** Optional via `PGMON_DATA_DIR`, atomic writes to `state.json`, flush every 60s
 
-#### **Historical Retention & Aggregation** (Planned)
-- **Dual-tier storage:** keep **high-resolution samples for 24h** (loop cadence, capped by a ring buffer) and roll those into **coarser aggregates at 7d, 30d, and 365d windows** (daily means/min/max for the first two, weekly means for the yearly view) so we can visualize both recent incidents and long-term tuning wins.
-- **Aggregators:** nightly job (or background task) collapses intraday points into `DailyMetricSummary` structs `{ date, mean, max, min }` and weekly rollups `{ week, mean, max, min }`, persisted in-memory (future: durable store).
-- **Alerts timeline:** emit `AlertEvent { id, message, severity, started_at, cleared_at }` whenever loops raise or resolve conditions. Maintain:
-  - `open_alerts` for instantaneous overview panels.
-  - `VecDeque<AlertEvent>` for historical UI (sticky severity badges, “time in state”).
-- **API surface:**
-  - `GET /api/v1/history/{metric}?window=24h&rollup=auto` → high-res samples with optional downsampling.
-  - `GET /api/v1/history/{metric}?window=7d&rollup=daily`, `...&window=30d`, `...&window=365d&rollup=weekly` → aggregated summaries for medium/long horizons.
-  - `GET /api/v1/alerts/history?limit=200` → chronological alert events (active + cleared) for timeline visualizations.
-- **Frontend consumption:**
-  - `useTimeseries(metric, window)` hook abstracts polling and downsampling selection.
-  - Overview sparklines pull 24h high-res; modal charts offer 7d/30d rollups.
-  - Alerts tab shows current list + “recent history” section with start/end timestamps and duration pills.
-- **Retention defaults:** ship with 24h high-res + 7d/30d daily + 365d weekly rollups baked in (no YAML required). Optional advanced overrides can live behind env vars if real-world operators request more/less retention.
+#### **API Surface**
+- ✅ `GET /api/v1/history/:metric` — Individual metric history with window/downsampling support
+- ✅ `GET /api/v1/history/overview` — Multi-series KPI endpoint (reduces round-trips)
+- ✅ `GET /api/v1/alerts/history` — Alert lifecycle events with started_at/cleared_at timestamps
+
+#### **Frontend Integration**
+- ✅ MetricCard sparklines showing recent trends
+- ✅ Full-size charts with Recharts (1-hour windows, 300 points)
+- ✅ Alerts tab with active + cleared events timeline
+- ✅ Custom polling hook with incremental fetching (via `since` parameter)
+
+---
+
+### **Future Enhancements** (v2 Candidates)
 
 #### **Live Updates via WebSocket** (Optional)
 - Current: 30s polling with `/api/v1/*` endpoints
@@ -964,16 +1083,17 @@ GET /api/v1/history?metric=tps&duration=1h
 - ✅ Alert threshold transparency (show calculation on hover)
 - ✅ Partition cadence human-readable formatting
 
-#### **Phase 3: Time-Series Backend** (~5 hours)
-- 🔲 Ring buffer for metric history in `SharedState`
-- 🔲 `/api/v1/history` endpoint
-- 🔲 Retention policy (keep last 24h in memory, optionally persist)
+#### **Phase 3: Time-Series Backend** — ✅ COMPLETE
+- ✅ Ring buffer for metric history in `SharedState` (1,500 points, configurable)
+- ✅ `/api/v1/history/:metric` and `/api/v1/history/overview` endpoints
+- ✅ Multi-tier retention (48h high-res, 30d daily, 365d weekly)
+- ✅ Disk persistence with atomic writes (`PGMON_DATA_DIR`)
 
-#### **Phase 4: Charts & Sparklines** (~3 hours)
-- 🔲 Recharts integration
-- 🔲 MetricCard sparklines (36px area charts)
-- 🔲 Overview dashboard: TPS/QPS + Latency charts
-- 🔲 Workload: Query performance trends
+#### **Phase 4: Charts & Sparklines** — ✅ COMPLETE
+- ✅ Recharts integration (LineChart, AreaChart components)
+- ✅ MetricCard sparklines showing 1-hour trends
+- ✅ Overview dashboard: Full-size charts for all KPIs
+- ✅ Incremental polling with `since` parameter
 
 ---
 

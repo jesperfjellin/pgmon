@@ -75,7 +75,7 @@ security:
   redact_sql_text: true
 
 ui:
-  # Hide built-in postgres/template databases from wraparound panels.
+  # Hide built-in postgres/template databases from wraparound panels (postgres, template0, template1).
   hide_postgres_defaults: true
 
 timeouts:
