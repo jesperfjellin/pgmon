@@ -32,6 +32,7 @@ pub fn create_router(ctx: AppContext) -> Router {
         .route("/replication", get(get_replication))
         .route("/wraparound", get(get_wraparound))
         .route("/recommendations", get(get_recommendations))
+        .route("/forecasts", get(get_forecasts))
         .route("/alerts/history", get(get_alerts_history))
         .route("/history/:metric", get(get_history));
     // Combined KPI history endpoint.
@@ -140,6 +141,20 @@ async fn get_recommendations(State(ctx): State<AppContext>) -> Json<Recommendati
         &snapshots.stale_stats,
     );
     Json(RecommendationsResponse { recommendations })
+}
+
+async fn get_forecasts(State(ctx): State<AppContext>) -> Json<crate::forecasting::ForecastsResponse> {
+    let snapshots = ctx.state.get_snapshots().await;
+    let history = ctx.state.snapshot_metric_history().await;
+
+    let forecasts = crate::forecasting::generate_forecasts(
+        &snapshots.overview,
+        &snapshots.storage,
+        &snapshots.wraparound.databases,
+        &snapshots.wraparound.relations,
+        &history.daily, // Use daily aggregates for connection history
+    );
+    Json(crate::forecasting::ForecastsResponse { forecasts })
 }
 
 async fn get_alerts_history(
