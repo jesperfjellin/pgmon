@@ -218,7 +218,8 @@ async fn update_top_queries(ctx: &AppContext) -> Result<()> {
             calls,
             total_exec_time AS total_time,
             mean_exec_time AS mean_time,
-            shared_blks_read
+            shared_blks_read,
+            shared_blks_hit
         FROM pg_stat_statements
         ORDER BY total_time DESC
         LIMIT $1
@@ -237,6 +238,15 @@ async fn update_top_queries(ctx: &AppContext) -> Result<()> {
                 let total_time_ms: f64 = row.try_get("total_time")?;
                 let mean_time_ms: f64 = row.try_get("mean_time")?;
                 let shared_blks_read: i64 = row.try_get("shared_blks_read")?;
+                let shared_blks_hit: i64 = row.try_get("shared_blks_hit")?;
+
+                // Calculate cache hit ratio
+                let total_blks = shared_blks_read + shared_blks_hit;
+                let cache_hit_ratio = if total_blks > 0 {
+                    shared_blks_hit as f64 / total_blks as f64
+                } else {
+                    1.0 // No I/O = perfect cache hit
+                };
 
                 entries.push(TopQueryEntry {
                     queryid,
@@ -244,6 +254,8 @@ async fn update_top_queries(ctx: &AppContext) -> Result<()> {
                     total_time_seconds: total_time_ms / 1_000.0,
                     mean_time_ms,
                     shared_blks_read,
+                    shared_blks_hit,
+                    cache_hit_ratio,
                 });
             }
             ctx.metrics
