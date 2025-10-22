@@ -11,6 +11,7 @@ import {
   AlertTriangle,
   Settings,
   Clock4,
+  TrendingUp,
 } from "lucide-react";
 import {
   api,
@@ -18,6 +19,8 @@ import {
   BlockingEvent,
   BloatSample,
   AlertEvent,
+  Forecast,
+  ForecastsResponse,
   OverviewSnapshot,
   PartitionSlice,
   Recommendation,
@@ -363,6 +366,7 @@ const tabs = [
   { key: "storage", label: "Storage", icon: <Layers className="h-4 w-4" /> },
   { key: "bloat", label: "Bloat", icon: <BarChart2 className="h-4 w-4" /> },
   { key: "recommendations", label: "Recommendations", icon: <Zap className="h-4 w-4" /> },
+  { key: "forecasts", label: "Forecasts", icon: <TrendingUp className="h-4 w-4" /> },
   { key: "history", label: "History", icon: <Activity className="h-4 w-4" /> },
   { key: "stale-stats", label: "Stale Stats", icon: <Clock4 className="h-4 w-4" /> },
   { key: "indexes", label: "Indexes", icon: <Layers className="h-4 w-4" /> },
@@ -1157,6 +1161,110 @@ function RecommendationsTab({ recommendations }: { recommendations: Recommendati
   );
 }
 
+function ForecastsTab({ forecasts }: { forecasts: Forecast[] }) {
+  const getSeverityColor = (severity: string) => {
+    if (severity === "urgent") return "red";
+    if (severity === "crit") return "red";
+    if (severity === "warn") return "yellow";
+    return "blue";
+  };
+
+  const getKindLabel = (kind: string) => {
+    if (kind === "wraparound_database") return "WRAPAROUND (DB)";
+    if (kind === "wraparound_relation") return "WRAPAROUND (TABLE)";
+    if (kind === "table_growth") return "TABLE GROWTH";
+    if (kind === "connection_saturation") return "CONNECTIONS";
+    return kind;
+  };
+
+  const formatDate = (epoch: number | null | undefined) => {
+    if (!epoch) return "N/A";
+    return new Date(epoch * 1000).toLocaleDateString("en-US", {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    });
+  };
+
+  return (
+    <div className="space-y-4">
+      <Section
+        title="Capacity Forecasts"
+        subtitle={forecasts.length === 0 ? "All healthy!" : `${forecasts.length} capacity warnings`}
+        icon={<TrendingUp className="h-5 w-5 text-blue-500" />}
+      />
+
+      {forecasts.length === 0 ? (
+        <Card>
+          <CardBody>
+            <div className="text-center py-8">
+              <div className="text-4xl mb-2">✨</div>
+              <div className="text-lg font-semibold text-slate-700">No capacity issues forecast</div>
+              <div className="text-sm text-slate-500 mt-1">All resources are trending healthy!</div>
+            </div>
+          </CardBody>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          {forecasts.map((forecast, index) => (
+            <Card key={`${forecast.resource}-${forecast.kind}-${index}`}>
+              <CardBody>
+                <div className="space-y-3">
+                  {/* Header */}
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-center gap-2">
+                      <Badge tone={getSeverityColor(forecast.severity)}>{forecast.severity.toUpperCase()}</Badge>
+                      <Badge tone="slate">{getKindLabel(forecast.kind)}</Badge>
+                      <span className="font-mono text-sm text-slate-700">{forecast.resource}</span>
+                    </div>
+                  </div>
+
+                  {/* Message */}
+                  <div className="text-sm text-slate-600 leading-relaxed">
+                    {forecast.message}
+                  </div>
+
+                  {/* Forecast details */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
+                    <div>
+                      <div className="text-slate-500">Current</div>
+                      <div className="font-semibold text-slate-900">{forecast.current_value.toFixed(0)}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-500">Threshold</div>
+                      <div className="font-semibold text-slate-900">{forecast.threshold.toFixed(0)}</div>
+                    </div>
+                    {forecast.growth_rate_per_day > 0 && (
+                      <div>
+                        <div className="text-slate-500">Growth/Day</div>
+                        <div className="font-semibold text-amber-600">+{forecast.growth_rate_per_day.toFixed(1)}</div>
+                      </div>
+                    )}
+                    {forecast.days_until_threshold !== null && forecast.days_until_threshold !== undefined && (
+                      <div>
+                        <div className="text-slate-500">Days Until</div>
+                        <div className="font-semibold text-red-600">{forecast.days_until_threshold.toFixed(0)} days</div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Predicted date */}
+                  {forecast.predicted_date && (
+                    <div className="bg-amber-50 border border-amber-200 rounded p-3 text-sm">
+                      <span className="font-semibold text-amber-900">Predicted breach: </span>
+                      <span className="text-amber-700">{formatDate(forecast.predicted_date)}</span>
+                    </div>
+                  )}
+                </div>
+              </CardBody>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WraparoundTab({ snapshot }: { snapshot: WraparoundSnapshot }) {
   const topDatabases = snapshot.databases.slice(0, 5);
   const topRelations = snapshot.relations.slice(0, 5);
@@ -1289,6 +1397,7 @@ function App() {
   const { data: unusedIndexes } = usePollingData<UnusedIndexEntry[]>(api.unusedIndexes, [], 300_000);
   const { data: wraparound } = usePollingData<WraparoundSnapshot>(api.wraparound, { databases: [], relations: [] }, 300_000);
   const { data: recommendationsData } = usePollingData<RecommendationsResponse>(api.recommendations, { recommendations: [] }, 60_000);
+  const { data: forecastsData } = usePollingData<ForecastsResponse>(api.forecasts, { forecasts: [] }, 60_000);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white text-slate-900">
@@ -1345,6 +1454,7 @@ function App() {
           {active === 'storage' && <StorageTab rows={storage} />}
           {active === 'bloat' && <BloatTab samples={bloatSamples} />}
           {active === 'recommendations' && <RecommendationsTab recommendations={recommendationsData.recommendations} />}
+          {active === 'forecasts' && <ForecastsTab forecasts={forecastsData.forecasts} />}
           {active === 'history' && <HistoryCharts />}
           {active === 'stale-stats' && <StaleStatsTab rows={staleStats} />}
           {active === 'replication' && <ReplicationTab replicas={replication} />}
