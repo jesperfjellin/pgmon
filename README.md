@@ -690,17 +690,17 @@ With v1 feature-complete, v2 focuses on **visual polish** and **actionable recom
 
 **Philosophy Shift:** V1 shows *what's happening* (descriptive monitoring). V2 tells *what to do* (prescriptive recommendations).
 
-**V2 Progress: 2 of 3 P0 features complete** ✅
+**V2 Progress: 2 of 3 P0 complete | 1 of 3 P1 complete** ✅
 
-**Completed Features:**
+**Completed P0 Features:**
 - ✅ **Cache Hit Ratio Visualization** — Per-table and per-query cache efficiency with color-coded indicators
 - ✅ **VACUUM/ANALYZE Command Generation** — Smart recommendations with rationale, impact estimates, and copyable SQL
 
-**Next Priority:**
-- 🎯 **Autovacuum Advisor** — Per-table threshold recommendations based on observed churn rates (natural extension of command generation)
+**Completed P1 Features:**
+- ✅ **Autovacuum Advisor** — Per-table threshold recommendations (scale_factor, threshold) for starving/high-churn/large tables
 
-**Remaining P0:**
-- **Capacity Forecasting** — Predict disk-full, wraparound risk, connection saturation with ETAs
+**Next Priority (P0):**
+- 🎯 **Capacity Forecasting** — Predict disk-full, wraparound risk, connection saturation with ETAs and proactive alerts
 
 **Key Additions:**
 - **Wait Event Dashboard** — Real-time bottleneck classification (CPU, I/O, locks)
@@ -708,8 +708,8 @@ With v1 feature-complete, v2 focuses on **visual polish** and **actionable recom
 - **Index Recommendations** — Detect missing/duplicate indexes with CREATE/DROP suggestions
 
 **Priority Tiers:**
-- **P0 (Must-Have):** ✅ ~~VACUUM/ANALYZE command generation~~, ✅ ~~cache hit ratio visualization~~, capacity forecasting (disk/XID)
-- **P1 (High Value):** 🎯 **Autovacuum advisor** (NEXT), replication slot monitoring, index recommendations (missing/duplicate)
+- **P0 (Must-Have):** ✅ ~~VACUUM/ANALYZE command generation~~, ✅ ~~cache hit ratio visualization~~, 🎯 **capacity forecasting (disk/XID)** ← NEXT
+- **P1 (High Value):** ✅ ~~Autovacuum advisor~~, replication slot monitoring, index recommendations (missing/duplicate)
 - **P2 (Nice-to-Have):** Wait event analysis, cache optimization advisor, pg_buffercache integration
 - **P3 (Future):** Webhook delivery (Slack/email/PagerDuty), anomaly detection, log parsing, query plan regression tracking
 
@@ -756,12 +756,13 @@ With v1 feature-complete, v2 focuses on **visual polish** and **actionable recom
   - ✅ Dedicated Recommendations tab with severity-coded UI (Crit/Warn/Info)
   - 🔲 REINDEX recommendations (planned: index bloat >50%)
 
-* **Autovacuum Advisor (NEXT PRIORITY):**
-  - Per-table threshold recommendations based on observed churn rates
-  - "Starving tables" detector: high churn + no recent vacuum → suggest manual `VACUUM ANALYZE`
-  - Cost/benefit analysis: dead tuple impact on query performance
-  - Safe parameter suggestions (`autovacuum_vacuum_scale_factor`, `autovacuum_vacuum_threshold`)
-  - Recommended settings diff: "Current: scale_factor=0.2, Suggested: scale_factor=0.05 for high-churn table"
+* **✅ Autovacuum Advisor (IMPLEMENTED):**
+  - ✅ Per-table threshold recommendations based on observed churn rates
+  - ✅ "Starving tables" detector: dead ratio ≥15% + no vacuum in 6h → Crit (suggest scale_factor=0.05, threshold=1000)
+  - ✅ "High-churn tables" detector: dead ratio 10-20% despite recent vacuum → Warn (suggest scale_factor=0.1, threshold=500)
+  - ✅ "Large table optimization": >10M rows → Info (suggest threshold=10000 to reduce autovacuum frequency)
+  - ✅ Copyable `ALTER TABLE ... SET (autovacuum_vacuum_scale_factor, autovacuum_vacuum_threshold)` commands
+  - ✅ Rationale with current vs recommended settings diff
 
 * **Vacuum Outcome Tracker:**
   - Correlate vacuum runs with dead-tuple/size deltas
@@ -784,12 +785,13 @@ With v1 feature-complete, v2 focuses on **visual polish** and **actionable recom
   - Checkpoint tuning advisor (recommend `max_wal_size` adjustments based on thrash patterns)
   - Wait event profiling: correlate wait events with slow queries, identify systemic bottlenecks
 
-* **Capacity Forecasting:**
+* **🎯 Capacity Forecasting (NEXT PRIORITY - P0):**
   - Table/index growth rate trending → "Table `events` will reach 100GB in 45 days"
   - Disk usage projection → "Disk 80% full in 60 days at current growth rate"
   - XID consumption rate → "Wraparound risk in 127 days (currently at 45% of autovacuum_freeze_max_age)"
   - Connection saturation forecasting → "Max connections will be hit during peak hours in 2 weeks"
   - Proactive alerts when forecasted events fall within critical windows
+  - Linear regression on historical data (daily/weekly aggregates) to predict resource exhaustion
 
 * **Cache Optimization Advisor:**
   - Flag high-I/O tables not resident in buffer cache → "Table `user_activity` has 12% cache hit ratio, consider increasing `shared_buffers` or adding indexes"
