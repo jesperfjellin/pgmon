@@ -16,10 +16,18 @@ SELECT
     NULLIF(s.n_live_tup + s.n_dead_tup, 0)::double precision AS tuple_denominator,
     s.n_dead_tup AS dead_tuples,
     s.last_autovacuum,
-    c.reltuples::double precision AS reltuples
+    c.reltuples::double precision AS reltuples,
+    io.heap_blks_read,
+    io.heap_blks_hit,
+    CASE
+        WHEN (COALESCE(io.heap_blks_read, 0) + COALESCE(io.heap_blks_hit, 0)) > 0
+        THEN COALESCE(io.heap_blks_hit, 0)::double precision / (COALESCE(io.heap_blks_read, 0) + COALESCE(io.heap_blks_hit, 0))
+        ELSE NULL
+    END AS cache_hit_ratio
 FROM pg_class c
 JOIN pg_namespace n ON n.oid = c.relnamespace
 LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+LEFT JOIN pg_statio_user_tables io ON io.relid = c.oid
 WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
   AND c.relkind IN ('r','m')
 ORDER BY pg_total_relation_size(c.oid) DESC
@@ -83,6 +91,9 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
         let last_autovacuum: Option<chrono::DateTime<chrono::Utc>> =
             row.try_get("last_autovacuum")?;
         let reltuples: Option<f64> = row.try_get("reltuples")?;
+        let heap_blks_read: Option<i64> = row.try_get("heap_blks_read")?;
+        let heap_blks_hit: Option<i64> = row.try_get("heap_blks_hit")?;
+        let cache_hit_ratio: Option<f64> = row.try_get("cache_hit_ratio")?;
 
         let dead_ratio = match (dead_tuples, tuple_denominator) {
             (Some(dead), Some(total)) if total > 0.0 => Some(dead as f64 / total * 100.0),
@@ -114,6 +125,9 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
             reltuples,
             dead_tuples: dead_tuples_count,
             estimated_bloat_bytes,
+            cache_hit_ratio,
+            heap_blks_read,
+            heap_blks_hit,
         });
     }
 
