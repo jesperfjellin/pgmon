@@ -12,6 +12,7 @@ import {
   Settings,
   Clock4,
   TrendingUp,
+  X,
 } from "lucide-react";
 import {
   api,
@@ -1066,6 +1067,20 @@ function AlertsTab({ overview }: { overview: OverviewSnapshot | null }) {
 
 function RecommendationsTab({ recommendations }: { recommendations: Recommendation[] }) {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
+
+  // Clear dismissed recommendations when new data arrives from backend
+  // This ensures dismissed items reappear if they're still valid after the next hourly refresh
+  useEffect(() => {
+    setDismissed(new Set());
+  }, [recommendations]);
+
+  const getRecommendationKey = (rec: Recommendation) => `${rec.relation}-${rec.kind}`;
+
+  const handleDismiss = (rec: Recommendation) => {
+    const key = getRecommendationKey(rec);
+    setDismissed(prev => new Set(prev).add(key));
+  };
 
   const handleCopy = (sql: string, index: number) => {
     navigator.clipboard.writeText(sql);
@@ -1088,15 +1103,20 @@ function RecommendationsTab({ recommendations }: { recommendations: Recommendati
     return kind;
   };
 
+  // Filter out dismissed recommendations
+  const visibleRecommendations = recommendations.filter(
+    rec => !dismissed.has(getRecommendationKey(rec))
+  );
+
   return (
     <div className="space-y-4">
       <Section
         title="Recommendations"
-        subtitle={recommendations.length === 0 ? "All healthy!" : `${recommendations.length} maintenance suggestions`}
+        subtitle={visibleRecommendations.length === 0 ? "All healthy!" : `${visibleRecommendations.length} maintenance suggestions`}
         icon={<Zap className="h-5 w-5 text-amber-500" />}
       />
 
-      {recommendations.length === 0 ? (
+      {visibleRecommendations.length === 0 ? (
         <Card>
           <CardBody>
             <div className="text-center py-8">
@@ -1108,7 +1128,7 @@ function RecommendationsTab({ recommendations }: { recommendations: Recommendati
         </Card>
       ) : (
         <div className="space-y-3">
-          {recommendations.map((rec, index) => (
+          {visibleRecommendations.map((rec, index) => (
             <Card key={`${rec.relation}-${rec.kind}-${index}`}>
               <CardBody>
                 <div className="space-y-3">
@@ -1119,6 +1139,13 @@ function RecommendationsTab({ recommendations }: { recommendations: Recommendati
                       <Badge tone="slate">{getKindLabel(rec.kind)}</Badge>
                       <span className="font-mono text-sm text-slate-700">{rec.relation}</span>
                     </div>
+                    <button
+                      onClick={() => handleDismiss(rec)}
+                      className="flex-shrink-0 p-1 hover:bg-slate-100 rounded transition-colors group"
+                      title="Dismiss (will reappear on next refresh if still valid)"
+                    >
+                      <X className="h-4 w-4 text-slate-400 group-hover:text-slate-600" />
+                    </button>
                   </div>
 
                   {/* Rationale */}
