@@ -31,6 +31,7 @@ pub fn create_router(ctx: AppContext) -> Router {
         .route("/partitions", get(get_partitions))
         .route("/replication", get(get_replication))
         .route("/wraparound", get(get_wraparound))
+        .route("/recommendations", get(get_recommendations))
         .route("/alerts/history", get(get_alerts_history))
         .route("/history/:metric", get(get_history));
     // Combined KPI history endpoint.
@@ -123,6 +124,22 @@ async fn get_replication(State(ctx): State<AppContext>) -> Json<Vec<crate::state
 async fn get_wraparound(State(ctx): State<AppContext>) -> Json<crate::state::WraparoundSnapshot> {
     let snapshots = ctx.state.get_snapshots().await;
     Json(snapshots.wraparound)
+}
+
+#[derive(serde::Serialize)]
+struct RecommendationsResponse {
+    recommendations: Vec<crate::recommendations::Recommendation>,
+}
+
+async fn get_recommendations(State(ctx): State<AppContext>) -> Json<RecommendationsResponse> {
+    let snapshots = ctx.state.get_snapshots().await;
+    let recommendations = crate::recommendations::generate_recommendations(
+        &snapshots.storage,
+        &snapshots.bloat_samples,
+        &snapshots.autovacuum,
+        &snapshots.stale_stats,
+    );
+    Json(RecommendationsResponse { recommendations })
 }
 
 async fn get_alerts_history(
