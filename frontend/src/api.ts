@@ -148,6 +148,22 @@ export interface RecommendationsResponse {
   recommendations: Recommendation[];
 }
 
+export interface Forecast {
+  kind: "wraparound_database" | "wraparound_relation" | "table_growth" | "connection_saturation";
+  resource: string;
+  current_value: number;
+  threshold: number;
+  growth_rate_per_day: number;
+  days_until_threshold?: number | null;
+  predicted_date?: number | null; // epoch seconds
+  severity: "info" | "warn" | "crit" | "urgent";
+  message: string;
+}
+
+export interface ForecastsResponse {
+  forecasts: Forecast[];
+}
+
 const DEFAULT_REFRESH_MS = 30_000;
 
 async function fetchJson<T>(path: string, signal?: AbortSignal): Promise<T> {
@@ -210,6 +226,7 @@ export const api = {
   partitions: "/api/v1/partitions",
   wraparound: "/api/v1/wraparound",
   recommendations: "/api/v1/recommendations",
+  forecasts: "/api/v1/forecasts",
   alertsHistory: "/api/v1/alerts/history",
   metricHistory: (metric: string) => `/api/v1/history/${metric}`,
   overviewHistory: `/api/v1/history/overview`,
