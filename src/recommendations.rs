@@ -11,6 +11,7 @@ pub enum RecommendationKind {
     VacuumFull,
     Analyze,
     Reindex,
+    AutovacuumTuning,
 }
 
 /// Severity level for recommendations
@@ -58,6 +59,9 @@ pub fn generate_recommendations(
 
     // Generate ANALYZE recommendations
     recommendations.extend(generate_analyze_recommendations(stale_stats));
+
+    // Generate Autovacuum Tuning recommendations
+    recommendations.extend(generate_autovacuum_tuning_recommendations(storage, autovac));
 
     // Sort by severity (Crit first, then Warn, then Info)
     recommendations.sort_by(|a, b| b.severity.cmp(&a.severity));
@@ -286,6 +290,148 @@ fn generate_analyze_recommendations(stale_stats: &[StaleStatEntry]) -> Vec<Recom
             rationale,
             impact: Impact {
                 estimated_duration_seconds: estimated_duration,
+                locks_table: false,
+                reclaim_bytes: None,
+            },
+        });
+    }
+
+    recommendations
+}
+
+/// Recommend autovacuum parameter tuning for tables with chronic dead tuple buildup
+fn generate_autovacuum_tuning_recommendations(
+    storage: &[StorageEntry],
+    autovac: &[AutovacuumEntry],
+) -> Vec<Recommendation> {
+    let mut recommendations = Vec::new();
+
+    for storage_entry in storage {
+        // Skip if no dead tuple data
+        let dead_ratio = match storage_entry.dead_tuple_ratio {
+            Some(dr) if dr > 0.0 => dr,
+            _ => continue,
+        };
+
+        let dead_tuples = storage_entry.dead_tuples.unwrap_or(0);
+
+        // Find matching autovacuum entry
+        let autovac_entry = autovac
+            .iter()
+            .find(|av| av.relation == storage_entry.relation);
+
+        let n_live_tup = autovac_entry.map(|av| av.n_live_tup).unwrap_or(0);
+
+        // Calculate hours since last autovacuum
+        let hours_since_autovac = autovac_entry
+            .and_then(|av| av.last_autovacuum.or(av.last_vacuum))
+            .map(|dt| {
+                let age = Utc::now().signed_duration_since(dt);
+                age.num_hours() as f64 + (age.num_minutes() % 60) as f64 / 60.0
+            });
+
+        // Rule 1: High-churn tables needing more aggressive autovacuum
+        // Dead ratio between 10-20% on tables with recent vacuum = autovacuum not keeping up
+        let is_high_churn = dead_ratio >= 10.0
+            && dead_ratio < 20.0
+            && n_live_tup > 100_000
+            && hours_since_autovac.map(|h| h < 24.0).unwrap_or(false);
+
+        // Rule 2: Large tables needing higher absolute thresholds
+        // Tables with >10M rows benefit from higher thresholds (default is 50)
+        let is_large_table = n_live_tup > 10_000_000 && dead_tuples > 50;
+
+        // Rule 3: "Starving" tables with chronic dead tuple buildup
+        // High dead ratio + no recent vacuum = autovacuum not running at all
+        let is_starving = dead_ratio >= 15.0
+            && hours_since_autovac.map(|h| h > 6.0).unwrap_or(true);
+
+        if !is_high_churn && !is_large_table && !is_starving {
+            continue;
+        }
+
+        // Determine severity and recommendation
+        let (severity, suggested_scale_factor, suggested_threshold) =
+            if is_starving {
+                // CRITICAL: Starving table needs immediate aggressive tuning
+                (
+                    Severity::Crit,
+                    0.05, // Very aggressive (5%)
+                    1000,
+                )
+            } else if is_high_churn {
+                // WARNING: High churn needs more aggressive autovacuum
+                (
+                    Severity::Warn,
+                    0.1, // Moderately aggressive (10%)
+                    500,
+                )
+            } else {
+                // INFO: Large table optimization
+                (
+                    Severity::Info,
+                    0.1, // Keep default scale factor
+                    10000,
+                )
+            };
+
+        // Build rationale based on the issue detected
+        let rationale = if is_starving {
+            let since_str = hours_since_autovac
+                .map(|h| {
+                    if h >= 24.0 {
+                        format!("in {:.1} days", h / 24.0)
+                    } else {
+                        format!("in {:.1} hours", h)
+                    }
+                })
+                .unwrap_or_else(|| "ever".to_string());
+
+            format!(
+                "Table has {:.1}% dead tuples and hasn't been autovacuumed {}. Autovacuum may be disabled or unable to keep up. Setting aggressive per-table thresholds will trigger more frequent vacuums",
+                dead_ratio, since_str
+            )
+        } else if is_high_churn {
+            let since_str = hours_since_autovac
+                .map(|h| {
+                    if h >= 24.0 {
+                        format!("in {:.1} days", h / 24.0)
+                    } else {
+                        format!("in {:.1} hours", h)
+                    }
+                })
+                .unwrap_or_else(|| "recently".to_string());
+
+            format!(
+                "Table has {:.1}% dead tuples despite recent autovacuum ({}). High churn rate requires more aggressive autovacuum settings to prevent bloat",
+                dead_ratio, since_str
+            )
+        } else {
+            // is_large_table
+            format!(
+                "Large table ({} rows) benefits from higher absolute threshold. Default threshold of 50 causes excessive autovacuum runs on large tables",
+                format_number(n_live_tup)
+            )
+        };
+
+        let sql_command = format!(
+            "ALTER TABLE {} SET (\n  autovacuum_vacuum_scale_factor = {},\n  autovacuum_vacuum_threshold = {}\n);",
+            storage_entry.relation, suggested_scale_factor, suggested_threshold
+        );
+
+        let full_rationale = format!(
+            "{}. Suggested settings: scale_factor={} (default: 0.2), threshold={} (default: 50).",
+            rationale, suggested_scale_factor, suggested_threshold
+        );
+
+        recommendations.push(Recommendation {
+            kind: RecommendationKind::AutovacuumTuning,
+            relation: storage_entry.relation.clone(),
+            severity,
+            sql_command,
+            rationale: full_rationale,
+            impact: Impact {
+                estimated_duration_seconds: Some(1), // Instant ALTER TABLE
                 locks_table: false,
                 reclaim_bytes: None,
             },
