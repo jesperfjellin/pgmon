@@ -79,9 +79,11 @@ interface MetricCardProps {
   tone?: "blue" | "green" | "amber" | "rose" | "violet" | "slate" | "red";
   status?: "warn" | "crit";
   series?: { value: number }[]; // expects pre-shaped small series
+  onClick?: () => void;
+  isActive?: boolean;
 }
 
-export function MetricCard({ title, value, unit, /* icon unused now */ tone = "blue", status, series }: MetricCardProps) {
+export function MetricCard({ title, value, unit, /* icon unused now */ tone = "blue", status, series, onClick, isActive }: MetricCardProps) {
   const toneColor = {
     blue: "text-sky-600",
     green: "text-emerald-600",
@@ -105,34 +107,44 @@ export function MetricCard({ title, value, unit, /* icon unused now */ tone = "b
   // SVG gradient id must be a valid XML ID (no spaces). Use a slugified title.
   const gradientId = `mc-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-spark`;
 
+  const cardClass = onClick
+    ? "cursor-pointer transition-all hover:shadow-md hover:-translate-y-0.5 active:scale-98"
+    : "";
+
+  const borderClass = isActive
+    ? `ring-2 ring-${tone === 'blue' ? 'sky' : tone === 'green' ? 'emerald' : tone === 'amber' ? 'amber' : tone === 'rose' ? 'rose' : tone === 'violet' ? 'violet' : tone === 'red' ? 'rose' : 'slate'}-400 shadow-md`
+    : "";
+
   return (
-    <Card>
-      <CardBody className="py-3">
-        <div className="flex flex-col items-center text-center gap-1">
-          <div className="text-xs text-slate-500">{title}</div>
-          <div className="text-lg sm:text-xl font-semibold text-slate-900 flex items-center gap-2">
-            {value}
-            {unit && <span className="text-slate-400 text-sm">{unit}</span>}
-            {status && <Badge tone={status === "crit" ? "red" : "yellow"}>{status}</Badge>}
-          </div>
-          {series && series.length > 0 && (
-            <div className="w-full mt-1 h-10">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={series} margin={{ left: 0, right: 0, top: 2, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor={stroke} stopOpacity={0.35} />
-                      <stop offset="95%" stopColor={stroke} stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <Area type="monotone" dataKey="value" stroke={stroke} fill={`url(#${gradientId})`} strokeWidth={2} />
-                </AreaChart>
-              </ResponsiveContainer>
+    <div onClick={onClick} className={cardClass}>
+      <Card className={borderClass}>
+        <CardBody className="py-3">
+          <div className="flex flex-col items-center text-center gap-1">
+            <div className="text-xs text-slate-500">{title}</div>
+            <div className="text-lg sm:text-xl font-semibold text-slate-900 flex items-center gap-2">
+              {value}
+              {unit && <span className="text-slate-400 text-sm">{unit}</span>}
+              {status && <Badge tone={status === "crit" ? "red" : "yellow"}>{status}</Badge>}
             </div>
-          )}
-        </div>
-      </CardBody>
-    </Card>
+            {series && series.length > 0 && (
+              <div className="w-full mt-1 h-10">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={series} margin={{ left: 0, right: 0, top: 2, bottom: 0 }}>
+                    <defs>
+                      <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor={stroke} stopOpacity={0.35} />
+                        <stop offset="95%" stopColor={stroke} stopOpacity={0} />
+                      </linearGradient>
+                    </defs>
+                    <Area type="monotone" dataKey="value" stroke={stroke} fill={`url(#${gradientId})`} strokeWidth={2} />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+        </CardBody>
+      </Card>
+    </div>
   );
 }
 

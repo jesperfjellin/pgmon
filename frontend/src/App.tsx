@@ -373,6 +373,7 @@ const tabs = [
 function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
   // History-derived KPI series
   const [loaded, setLoaded] = useState(false);
+  const [selectedMetric, setSelectedMetric] = useState<string | null>("tps"); // Start with TPS selected
   const [series, setSeries] = useState<{
     connections: { ts: number; value: number }[];
     tps: { ts: number; value: number }[];
@@ -488,11 +489,7 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
   const currentP99Latency = last(series.latency_p99_ms);
   const currentBlocked = last(series.blocked_sessions);
 
-  // Move hooks before early return to comply with Rules of Hooks
-  const blockingEvents = overview?.blocking_events ?? EMPTY_BLOCKING_EVENTS;
-  const topBlocking = useMemo<BlockingEvent[]>(() => blockingEvents.slice(0, 8), [blockingEvents]);
-
-  // Need overview for non-KPI lists (alerts, blocking chains, max_connections for ratio).
+  // Need overview for max_connections for ratio calculation.
   if (!overview || !loaded) {
     return <div className="text-sm text-slate-500">Loading history…</div>;
   }
@@ -504,122 +501,88 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
   const blockedWarn = (currentBlocked ?? 0) > 0 || longestBlocked >= BLOCKED_WARN;
   const blockedCrit = longestBlocked >= BLOCKED_CRIT;
 
+  // Metric configuration
+  const metrics = [
+    { key: 'connections', title: 'Connections', value: currentConnections !== undefined ? `${Math.round(currentConnections)}/${overview.max_connections}` : '–', tone: 'violet' as const, unit: undefined, status: connectionRatio >= CONNECTION_CRIT ? 'crit' as const : connectionRatio >= CONNECTION_WARN ? 'warn' as const : undefined },
+    { key: 'tps', title: 'TPS', value: currentTps !== undefined ? currentTps.toFixed(1) : '–', tone: 'green' as const, unit: undefined, status: undefined },
+    { key: 'qps', title: 'QPS', value: currentQps !== undefined ? currentQps.toFixed(1) : '–', tone: 'blue' as const, unit: undefined, status: undefined },
+    { key: 'mean_latency_ms', title: 'Mean Latency', value: currentMeanLatency !== undefined ? currentMeanLatency.toFixed(1) : '–', tone: 'amber' as const, unit: 'ms', status: undefined },
+    { key: 'latency_p95_ms', title: 'p95 Latency', value: currentP95Latency !== undefined ? currentP95Latency.toFixed(1) : '–', tone: 'rose' as const, unit: 'ms', status: undefined },
+    { key: 'latency_p99_ms', title: 'p99 Latency', value: currentP99Latency !== undefined ? currentP99Latency.toFixed(1) : '–', tone: 'red' as const, unit: 'ms', status: undefined },
+    { key: 'blocked_sessions', title: 'Blocked Sessions', value: currentBlocked !== undefined ? Math.round(currentBlocked) : '–', tone: 'slate' as const, unit: undefined, status: blockedCrit ? 'crit' as const : blockedWarn ? 'warn' as const : undefined },
+  ];
+
+  // Get selected metric's data
+  const selectedMetricData = selectedMetric ? series[selectedMetric as keyof typeof series] || [] : [];
+  const selectedMetricConfig = metrics.find(m => m.key === selectedMetric);
+
   return (
     <div className="space-y-6">
       {/* KPI cards */}
-  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7 gap-3">
-        <MetricCard
-          title="Connections"
-          value={currentConnections !== undefined ? `${Math.round(currentConnections)}/${overview.max_connections}` : '–'}
-          tone="violet"
-          status={
-            connectionRatio >= CONNECTION_CRIT
-              ? 'crit'
-              : connectionRatio >= CONNECTION_WARN
-              ? 'warn'
-              : undefined
-          }
-          series={series.connections.map(p => ({ value: p.value }))}
-        />
-        <MetricCard
-          title="TPS"
-          value={currentTps !== undefined ? currentTps.toFixed(1) : '–'}
-          tone="green"
-          series={series.tps.map(p => ({ value: p.value }))}
-        />
-        <MetricCard
-          title="QPS"
-          value={currentQps !== undefined ? currentQps.toFixed(1) : '–'}
-          tone="blue"
-          series={series.qps.map(p => ({ value: p.value }))}
-        />
-        <MetricCard
-          title="Mean Latency"
-          value={currentMeanLatency !== undefined ? currentMeanLatency.toFixed(1) : '–'}
-          unit="ms"
-          tone="amber"
-          series={series.mean_latency_ms.map(p => ({ value: p.value }))}
-        />
-        <MetricCard
-          title="p95 Latency"
-          value={currentP95Latency !== undefined ? currentP95Latency.toFixed(1) : '–'}
-          unit="ms"
-          tone="rose"
-          series={series.latency_p95_ms.map(p => ({ value: p.value }))}
-        />
-        <MetricCard
-          title="p99 Latency"
-          value={currentP99Latency !== undefined ? currentP99Latency.toFixed(1) : '–'}
-          unit="ms"
-          tone="red"
-          series={series.latency_p99_ms.map(p => ({ value: p.value }))}
-        />
-        <MetricCard
-          title="Blocked Sessions"
-          value={currentBlocked !== undefined ? Math.round(currentBlocked) : '–'}
-          tone="slate"
-          status={blockedCrit ? 'crit' : blockedWarn ? 'warn' : undefined}
-          series={series.blocked_sessions.map(p => ({ value: p.value }))}
-        />
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-7 gap-3">
+        {metrics.map(metric => (
+          <MetricCard
+            key={metric.key}
+            title={metric.title}
+            value={metric.value}
+            unit={metric.unit}
+            tone={metric.tone}
+            status={metric.status}
+            series={series[metric.key as keyof typeof series].map(p => ({ value: p.value }))}
+            onClick={() => setSelectedMetric(metric.key)}
+            isActive={selectedMetric === metric.key}
+          />
+        ))}
       </div>
 
-      {/* Alerts + Blocking Chains */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <Card className="lg:col-span-2">
+      {/* Full-size chart for selected metric */}
+      {selectedMetric && selectedMetricData.length > 0 && (
+        <Card>
           <CardHeader
-            title="Active Alerts"
-            icon={<AlertTriangle className="h-4 w-4 text-amber-600" />}
+            title={`${selectedMetricConfig?.title || selectedMetric} History`}
+            icon={<Activity className="h-4 w-4 text-slate-500" />}
             actions={
-              <Badge tone={overview.open_alerts.length + overview.open_crit_alerts.length === 0 ? "green" : "yellow"}>
-                {overview.open_alerts.length + overview.open_crit_alerts.length === 0
-                  ? "Healthy"
-                  : `${overview.open_alerts.length + overview.open_crit_alerts.length} alerts`}
-              </Badge>
+              <button
+                onClick={() => setSelectedMetric(null)}
+                className="text-xs text-slate-500 hover:text-slate-700"
+              >
+                Close
+              </button>
             }
           />
           <CardBody>
-            {overview.open_crit_alerts.length === 0 && overview.open_alerts.length === 0 ? (
-              <div className="text-sm text-slate-500">No active alerts.</div>
-            ) : (
-              <ul className="divide-y divide-slate-100">
-                {overview.open_crit_alerts.map((alert, i) => (
-                  <li key={`crit-${i}`} className="py-2 flex items-center gap-3">
-                    <Badge tone="red">crit</Badge>
-                    <div className="text-sm text-slate-800">{alert}</div>
-                  </li>
-                ))}
-                {overview.open_alerts.map((alert, i) => (
-                  <li key={`warn-${i}`} className="py-2 flex items-center gap-3">
-                    <Badge tone="yellow">warn</Badge>
-                    <div className="text-sm text-slate-800">{alert}</div>
-                  </li>
-                ))}
-              </ul>
-            )}
+            <div className="h-80 w-full">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={selectedMetricData} margin={{ left: 8, right: 16, top: 8, bottom: 8 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                  <XAxis
+                    dataKey="ts"
+                    type="number"
+                    domain={['auto','auto']}
+                    tickFormatter={(ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    stroke="#64748b"
+                  />
+                  <YAxis stroke="#64748b" />
+                  <Tooltip
+                    labelFormatter={(ts) => new Date(ts as number).toLocaleString()}
+                    contentStyle={{ backgroundColor: 'white', border: '1px solid #e2e8f0', borderRadius: '8px' }}
+                  />
+                  <Legend />
+                  <Line
+                    type="monotone"
+                    dataKey="value"
+                    stroke={selectedMetricConfig?.tone === 'blue' ? '#0ea5e9' : selectedMetricConfig?.tone === 'green' ? '#10b981' : selectedMetricConfig?.tone === 'amber' ? '#f59e0b' : selectedMetricConfig?.tone === 'rose' ? '#ef4444' : selectedMetricConfig?.tone === 'violet' ? '#8b5cf6' : selectedMetricConfig?.tone === 'red' ? '#ef4444' : '#64748b'}
+                    strokeWidth={2}
+                    dot={false}
+                    name={selectedMetricConfig?.title || selectedMetric}
+                    animationDuration={300}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
           </CardBody>
         </Card>
-        <Card>
-          <CardHeader title="Blocking Chains" icon={<Lock className="h-4 w-4 text-slate-500" />} />
-          <CardBody>
-            {topBlocking.length === 0 ? (
-              <div className="text-sm text-slate-500">No blocking chains detected.</div>
-            ) : (
-              <div className="space-y-2">
-                {topBlocking.slice(0, 5).map((event) => (
-                  <div key={`${event.blocked_pid}-${event.blocker_pid}`} className="text-xs">
-                    <div className="font-medium text-slate-900">
-                      PID {event.blocked_pid} ← {event.blocker_pid}
-                    </div>
-                    <div className="text-slate-500">
-                      Wait: {formatSeconds(event.blocked_wait_seconds)}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </CardBody>
-        </Card>
-      </div>
+      )}
 
       <SqlSnippet sql={SQL_SNIPPETS.overview} />
     </div>
