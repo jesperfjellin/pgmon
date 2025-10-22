@@ -131,6 +131,23 @@ export interface AlertEvent {
   cleared_at?: number | null; // epoch seconds
 }
 
+export interface Recommendation {
+  kind: "vacuum_analyze" | "vacuum_full" | "analyze" | "reindex";
+  relation: string;
+  severity: "info" | "warn" | "crit";
+  sql_command: string;
+  rationale: string;
+  impact: {
+    estimated_duration_seconds?: number | null;
+    locks_table: boolean;
+    reclaim_bytes?: number | null;
+  };
+}
+
+export interface RecommendationsResponse {
+  recommendations: Recommendation[];
+}
+
 const DEFAULT_REFRESH_MS = 30_000;
 
 async function fetchJson<T>(path: string, signal?: AbortSignal): Promise<T> {
@@ -192,6 +209,7 @@ export const api = {
   storage: "/api/v1/storage",
   partitions: "/api/v1/partitions",
   wraparound: "/api/v1/wraparound",
+  recommendations: "/api/v1/recommendations",
   alertsHistory: "/api/v1/alerts/history",
   metricHistory: (metric: string) => `/api/v1/history/${metric}`,
   overviewHistory: `/api/v1/history/overview`,
