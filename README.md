@@ -690,17 +690,26 @@ With v1 feature-complete, v2 focuses on **visual polish** and **actionable recom
 
 **Philosophy Shift:** V1 shows *what's happening* (descriptive monitoring). V2 tells *what to do* (prescriptive recommendations).
 
-**Key Additions:**
-- **Command Generation** — Auto-suggest `VACUUM`, `ANALYZE`, `REINDEX`, `DROP INDEX` commands with context and rationale
-- **Cache & Buffer Analysis** — Visualize cache hit ratios, buffer pool composition, I/O efficiency (data already in backend!)
+**V2 Progress: 2 of 3 P0 features complete** ✅
+
+**Completed Features:**
+- ✅ **Cache Hit Ratio Visualization** — Per-table and per-query cache efficiency with color-coded indicators
+- ✅ **VACUUM/ANALYZE Command Generation** — Smart recommendations with rationale, impact estimates, and copyable SQL
+
+**Next Priority:**
+- 🎯 **Autovacuum Advisor** — Per-table threshold recommendations based on observed churn rates (natural extension of command generation)
+
+**Remaining P0:**
 - **Capacity Forecasting** — Predict disk-full, wraparound risk, connection saturation with ETAs
+
+**Key Additions:**
 - **Wait Event Dashboard** — Real-time bottleneck classification (CPU, I/O, locks)
-- **Autovacuum Advisor** — Per-table threshold recommendations based on observed churn rates
 - **Replication Slot Management** — Detect orphaned slots causing WAL accumulation and disk-full risks
+- **Index Recommendations** — Detect missing/duplicate indexes with CREATE/DROP suggestions
 
 **Priority Tiers:**
-- **P0 (Must-Have):** VACUUM/ANALYZE command generation, cache hit ratio visualization, capacity forecasting (disk/XID)
-- **P1 (High Value):** Autovacuum advisor with threshold recommendations, replication slot monitoring, index recommendations (missing/duplicate)
+- **P0 (Must-Have):** ✅ ~~VACUUM/ANALYZE command generation~~, ✅ ~~cache hit ratio visualization~~, capacity forecasting (disk/XID)
+- **P1 (High Value):** 🎯 **Autovacuum advisor** (NEXT), replication slot monitoring, index recommendations (missing/duplicate)
 - **P2 (Nice-to-Have):** Wait event analysis, cache optimization advisor, pg_buffercache integration
 - **P3 (Future):** Webhook delivery (Slack/email/PagerDuty), anomaly detection, log parsing, query plan regression tracking
 
@@ -713,10 +722,11 @@ With v1 feature-complete, v2 focuses on **visual polish** and **actionable recom
   - Alert timeline visualization with severity escalation tracking
 
 * **Cache & Buffer Analysis:**
-  - Cache hit ratio trending per table (data already exists in `pg_stat_statements.shared_blks_read/hit`)
-  - `pg_buffercache` integration: heatmap showing which tables are "hot" in shared memory
-  - I/O efficiency dashboard: identify tables with low cache hit ratios (<99%)
-  - Buffer pool composition chart: visualize buffer usage by table/index
+  - ✅ Cache hit ratio per table (Storage tab with color coding: green ≥99%, amber ≥95%, red <95%)
+  - ✅ Cache hit ratio per query (Workload tab with visual bar charts)
+  - 🔲 `pg_buffercache` integration: heatmap showing which tables are "hot" in shared memory
+  - 🔲 I/O efficiency trends over time
+  - 🔲 Buffer pool composition chart: visualize buffer usage by table/index
 
 * **Wait Event Dashboard:**
   - Real-time histogram of `pg_stat_activity.wait_event_type` (Lock, IO, LWLock, Client, etc.)
@@ -738,11 +748,20 @@ With v1 feature-complete, v2 focuses on **visual polish** and **actionable recom
 
 ### **Operational Intelligence**
 
-* **Autovacuum Advisor:**
+* **✅ Maintenance Command Generation (IMPLEMENTED):**
+  - ✅ VACUUM ANALYZE recommendations: dead tuples ≥20% + ≥100k rows (Warn), ≥40% OR ≥500k (Crit)
+  - ✅ VACUUM FULL recommendations: bloat >40% with low dead tuples <5% (true bloat requiring exclusive lock)
+  - ✅ ANALYZE recommendations: stats stale >12h (Warn), >24h (Crit)
+  - ✅ Copyable SQL commands with rationale and impact estimates (duration, locks, bytes to reclaim)
+  - ✅ Dedicated Recommendations tab with severity-coded UI (Crit/Warn/Info)
+  - 🔲 REINDEX recommendations (planned: index bloat >50%)
+
+* **Autovacuum Advisor (NEXT PRIORITY):**
   - Per-table threshold recommendations based on observed churn rates
   - "Starving tables" detector: high churn + no recent vacuum → suggest manual `VACUUM ANALYZE`
   - Cost/benefit analysis: dead tuple impact on query performance
   - Safe parameter suggestions (`autovacuum_vacuum_scale_factor`, `autovacuum_vacuum_threshold`)
+  - Recommended settings diff: "Current: scale_factor=0.2, Suggested: scale_factor=0.05 for high-churn table"
 
 * **Vacuum Outcome Tracker:**
   - Correlate vacuum runs with dead-tuple/size deltas
