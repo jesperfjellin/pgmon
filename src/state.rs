@@ -441,6 +441,8 @@ pub struct TopQueryEntry {
     pub total_time_seconds: f64,
     pub mean_time_ms: f64,
     pub shared_blks_read: i64,
+    pub shared_blks_hit: i64,
+    pub cache_hit_ratio: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -456,6 +458,9 @@ pub struct StorageEntry {
     pub reltuples: Option<f64>,
     pub dead_tuples: Option<i64>,
     pub estimated_bloat_bytes: Option<i64>,
+    pub cache_hit_ratio: Option<f64>,
+    pub heap_blks_read: Option<i64>,
+    pub heap_blks_hit: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
