@@ -1080,6 +1080,7 @@ function RecommendationsTab({ recommendations }: { recommendations: Recommendati
     if (kind === "vacuum_full") return "VACUUM FULL";
     if (kind === "analyze") return "ANALYZE";
     if (kind === "reindex") return "REINDEX";
+    if (kind === "autovacuum_tuning") return "AUTOVACUUM TUNING";
     return kind;
   };
 
