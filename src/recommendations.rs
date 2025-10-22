@@ -55,7 +55,7 @@ pub fn generate_recommendations(
     recommendations.extend(generate_vacuum_analyze_recommendations(storage, autovac));
 
     // Generate VACUUM FULL recommendations
-    recommendations.extend(generate_vacuum_full_recommendations(bloat));
+    recommendations.extend(generate_vacuum_full_recommendations(bloat, storage));
 
     // Generate ANALYZE recommendations
     recommendations.extend(generate_analyze_recommendations(stale_stats));
@@ -175,7 +175,10 @@ fn generate_vacuum_analyze_recommendations(
 }
 
 /// Recommend VACUUM FULL for tables with high free space but low dead tuples
-fn generate_vacuum_full_recommendations(bloat: &[BloatSample]) -> Vec<Recommendation> {
+fn generate_vacuum_full_recommendations(
+    bloat: &[BloatSample],
+    storage: &[StorageEntry],
+) -> Vec<Recommendation> {
     let mut recommendations = Vec::new();
 
     for sample in bloat {
@@ -217,9 +220,31 @@ fn generate_vacuum_full_recommendations(bloat: &[BloatSample]) -> Vec<Recommenda
             )
         };
 
-        // VACUUM FULL duration is harder to estimate, but assume ~50MB/sec (slower than regular VACUUM)
+        // VACUUM FULL duration estimation:
+        // - Table rewrite: ~50 MB/sec on typical SSD
+        // - Index rebuild: ~30 MB/sec (slower due to sorting)
+        // - Add 20% overhead for fsync, catalog updates, etc.
         let estimated_duration = if sample.table_bytes > 0 {
-            Some((sample.table_bytes / 50_000_000).max(10) as u32)
+            // Find matching storage entry to get index size
+            let index_bytes = storage
+                .iter()
+                .find(|s| s.relation == sample.relation)
+                .map(|s| s.index_bytes)
+                .unwrap_or(0);
+
+            let table_mb = sample.table_bytes as f64 / (1024.0 * 1024.0);
+            let index_mb = index_bytes as f64 / (1024.0 * 1024.0);
+
+            // Table rewrite at 50 MB/sec
+            let table_sec = (table_mb / 50.0).max(1.0);
+
+            // Index rebuild at 30 MB/sec
+            let index_sec = index_mb / 30.0;
+
+            // Add 20% overhead for fsync, catalog updates
+            let total_sec = (table_sec + index_sec) * 1.2;
+
+            Some(total_sec.ceil().max(5.0) as u32)
         } else {
             None
         };
