@@ -43,6 +43,9 @@ export interface StorageEntry {
   reltuples?: number;
   dead_tuples?: number;
   estimated_bloat_bytes?: number | null;
+  cache_hit_ratio?: number | null;
+  heap_blks_read?: number | null;
+  heap_blks_hit?: number | null;
 }
 
 export interface UnusedIndexEntry {
@@ -70,6 +73,8 @@ export interface TopQueryEntry {
   total_time_seconds: number;
   mean_time_ms: number;
   shared_blks_read: number;
+  shared_blks_hit: number;
+  cache_hit_ratio: number;
 }
 
 export interface StaleStatEntry {
