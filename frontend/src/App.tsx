@@ -20,6 +20,8 @@ import {
   AlertEvent,
   OverviewSnapshot,
   PartitionSlice,
+  Recommendation,
+  RecommendationsResponse,
   ReplicaLag,
   StaleStatEntry,
   StorageEntry,
@@ -360,6 +362,7 @@ const tabs = [
   { key: "autovac", label: "Autovac", icon: <Zap className="h-4 w-4" /> },
   { key: "storage", label: "Storage", icon: <Layers className="h-4 w-4" /> },
   { key: "bloat", label: "Bloat", icon: <BarChart2 className="h-4 w-4" /> },
+  { key: "recommendations", label: "Recommendations", icon: <Zap className="h-4 w-4" /> },
   { key: "history", label: "History", icon: <Activity className="h-4 w-4" /> },
   { key: "stale-stats", label: "Stale Stats", icon: <Clock4 className="h-4 w-4" /> },
   { key: "indexes", label: "Indexes", icon: <Layers className="h-4 w-4" /> },
@@ -1057,6 +1060,102 @@ function AlertsTab({ overview }: { overview: OverviewSnapshot | null }) {
   );
 }
 
+function RecommendationsTab({ recommendations }: { recommendations: Recommendation[] }) {
+  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
+
+  const handleCopy = (sql: string, index: number) => {
+    navigator.clipboard.writeText(sql);
+    setCopiedIndex(index);
+    setTimeout(() => setCopiedIndex(null), 2000);
+  };
+
+  const getSeverityColor = (severity: string) => {
+    if (severity === "crit") return "red";
+    if (severity === "warn") return "yellow";
+    return "blue";
+  };
+
+  const getKindLabel = (kind: string) => {
+    if (kind === "vacuum_analyze") return "VACUUM ANALYZE";
+    if (kind === "vacuum_full") return "VACUUM FULL";
+    if (kind === "analyze") return "ANALYZE";
+    if (kind === "reindex") return "REINDEX";
+    return kind;
+  };
+
+  return (
+    <div className="space-y-4">
+      <Section
+        title="Recommendations"
+        subtitle={recommendations.length === 0 ? "All healthy!" : `${recommendations.length} maintenance suggestions`}
+        icon={<Zap className="h-5 w-5 text-amber-500" />}
+      />
+
+      {recommendations.length === 0 ? (
+        <Card>
+          <CardBody>
+            <div className="text-center py-8">
+              <div className="text-4xl mb-2">✨</div>
+              <div className="text-lg font-semibold text-slate-700">No recommendations</div>
+              <div className="text-sm text-slate-500 mt-1">All tables are healthy!</div>
+            </div>
+          </CardBody>
+        </Card>
+      ) : (
+        <div className="space-y-3">
+          {recommendations.map((rec, index) => (
+            <Card key={`${rec.relation}-${rec.kind}-${index}`}>
+              <CardBody>
+                <div className="space-y-3">
+                  {/* Header */}
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex items-center gap-2">
+                      <Badge tone={getSeverityColor(rec.severity)}>{rec.severity}</Badge>
+                      <Badge tone="slate">{getKindLabel(rec.kind)}</Badge>
+                      <span className="font-mono text-sm text-slate-700">{rec.relation}</span>
+                    </div>
+                  </div>
+
+                  {/* Rationale */}
+                  <div className="text-sm text-slate-600 leading-relaxed">
+                    {rec.rationale}
+                  </div>
+
+                  {/* Impact details */}
+                  <div className="flex items-center gap-4 text-xs text-slate-500">
+                    {rec.impact.estimated_duration_seconds && (
+                      <span>~{rec.impact.estimated_duration_seconds}s duration</span>
+                    )}
+                    {rec.impact.locks_table && (
+                      <span className="text-amber-600 font-semibold">⚠️ Locks table</span>
+                    )}
+                    {rec.impact.reclaim_bytes && (
+                      <span>Reclaim: {formatBytes(rec.impact.reclaim_bytes)}</span>
+                    )}
+                  </div>
+
+                  {/* SQL Command */}
+                  <div className="relative">
+                    <pre className="bg-slate-800 text-slate-100 p-3 rounded text-sm font-mono overflow-x-auto">
+                      {rec.sql_command}
+                    </pre>
+                    <button
+                      onClick={() => handleCopy(rec.sql_command, index)}
+                      className="absolute top-2 right-2 px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 text-slate-100 rounded transition-colors"
+                    >
+                      {copiedIndex === index ? "Copied!" : "Copy SQL"}
+                    </button>
+                  </div>
+                </div>
+              </CardBody>
+            </Card>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WraparoundTab({ snapshot }: { snapshot: WraparoundSnapshot }) {
   const topDatabases = snapshot.databases.slice(0, 5);
   const topRelations = snapshot.relations.slice(0, 5);
@@ -1188,6 +1287,7 @@ function App() {
   const { data: partitions } = usePollingData<PartitionSlice[]>(api.partitions, [], 300_000);
   const { data: unusedIndexes } = usePollingData<UnusedIndexEntry[]>(api.unusedIndexes, [], 300_000);
   const { data: wraparound } = usePollingData<WraparoundSnapshot>(api.wraparound, { databases: [], relations: [] }, 300_000);
+  const { data: recommendationsData } = usePollingData<RecommendationsResponse>(api.recommendations, { recommendations: [] }, 60_000);
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white text-slate-900">
@@ -1243,6 +1343,7 @@ function App() {
           {active === 'autovac' && <AutovacTab tables={autovacuum} />}
           {active === 'storage' && <StorageTab rows={storage} />}
           {active === 'bloat' && <BloatTab samples={bloatSamples} />}
+          {active === 'recommendations' && <RecommendationsTab recommendations={recommendationsData.recommendations} />}
           {active === 'history' && <HistoryCharts />}
           {active === 'stale-stats' && <StaleStatsTab rows={staleStats} />}
           {active === 'replication' && <ReplicationTab replicas={replication} />}
