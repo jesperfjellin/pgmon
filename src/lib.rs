@@ -2,6 +2,7 @@
 pub mod app;
 pub mod config;
 pub mod db;
+pub mod forecasting;
 pub mod http;
 pub mod metrics;
 pub mod persistence;

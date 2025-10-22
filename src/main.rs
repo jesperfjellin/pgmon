@@ -1,6 +1,7 @@
 mod app;
 mod config;
 mod db;
+mod forecasting;
 mod http;
 mod metrics;
 mod persistence;
