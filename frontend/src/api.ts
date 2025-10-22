@@ -132,7 +132,7 @@ export interface AlertEvent {
 }
 
 export interface Recommendation {
-  kind: "vacuum_analyze" | "vacuum_full" | "analyze" | "reindex";
+  kind: "vacuum_analyze" | "vacuum_full" | "analyze" | "reindex" | "autovacuum_tuning";
   relation: string;
   severity: "info" | "warn" | "crit";
   sql_command: string;
