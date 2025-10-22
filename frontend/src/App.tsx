@@ -610,18 +610,40 @@ function WorkloadTab({ queries }: { queries: TopQueryEntry[] }) {
                   <th className="py-2 pr-4">Calls</th>
                   <th className="py-2 pr-4">Total Time (s)</th>
                   <th className="py-2 pr-4">Mean (ms)</th>
-                  <th className="py-2 pr-4">Shared Blks Read</th>
+                  <th className="py-2 pr-4">Cache Hit %</th>
                 </tr>
               </thead>
               <tbody>
                 {topQueries.map((q) => {
+                  const cacheHitPercent = (q.cache_hit_ratio * 100);
+                  let barColor = "bg-slate-300";
+                  if (q.cache_hit_ratio >= 0.99) {
+                    barColor = "bg-green-500";
+                  } else if (q.cache_hit_ratio >= 0.95) {
+                    barColor = "bg-amber-500";
+                  } else {
+                    barColor = "bg-red-500";
+                  }
+
                   return (
                     <tr key={q.queryid} className="border-b border-slate-50 hover:bg-slate-50/60">
                       <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{q.queryid}</td>
                       <td className="py-2 pr-4">{numberFormatter.format(q.calls)}</td>
                       <td className="py-2 pr-4">{q.total_time_seconds.toFixed(2)}</td>
                       <td className="py-2 pr-4">{q.mean_time_ms.toFixed(2)}</td>
-                      <td className="py-2 pr-4">{numberFormatter.format(q.shared_blks_read)}</td>
+                      <td className="py-2 pr-4">
+                        <div className="flex items-center gap-2 min-w-[120px]">
+                          <div className="flex-1 bg-slate-100 rounded h-4 overflow-hidden">
+                            <div
+                              className={`h-full ${barColor}`}
+                              style={{ width: `${cacheHitPercent}%` }}
+                            />
+                          </div>
+                          <span className="text-xs font-mono w-12 text-right">
+                            {cacheHitPercent.toFixed(1)}%
+                          </span>
+                        </div>
+                      </td>
                     </tr>
                   );
                 })}
@@ -704,28 +726,48 @@ function StorageTab({ rows }: { rows: StorageEntry[] }) {
                   <th className="py-2 pr-4">Heap</th>
                   <th className="py-2 pr-4">Indexes</th>
                   <th className="py-2 pr-4">TOAST</th>
+                  <th className="py-2 pr-4">Cache Hit %</th>
                   <th className="py-2 pr-4">% Dead</th>
                   <th className="py-2 pr-4">Est. Bloat</th>
                 </tr>
               </thead>
               <tbody>
-                {topRows.map((row) => (
-                  <tr key={row.relation} className="border-b border-slate-50 hover:bg-slate-50/60">
-                    <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{row.relation}</td>
-                    <td className="py-2 pr-4">{formatBytes(row.total_bytes)}</td>
-                    <td className="py-2 pr-4">{formatBytes(row.table_bytes)}</td>
-                    <td className="py-2 pr-4">{formatBytes(row.index_bytes)}</td>
-                    <td className="py-2 pr-4">{formatBytes(row.toast_bytes)}</td>
-                    <td className="py-2 pr-4">
-                      {formatPercentMaybe(row.dead_tuple_ratio)}
-                    </td>
-                    <td className="py-2 pr-4">
-                      {row.estimated_bloat_bytes !== undefined && row.estimated_bloat_bytes !== null
-                        ? formatBytes(row.estimated_bloat_bytes)
-                        : "—"}
-                    </td>
-                  </tr>
-                ))}
+                {topRows.map((row) => {
+                  const cacheHitRatio = row.cache_hit_ratio;
+                  let cacheColorClass = "text-slate-400";
+                  if (cacheHitRatio !== null && cacheHitRatio !== undefined) {
+                    if (cacheHitRatio >= 0.99) {
+                      cacheColorClass = "text-green-600 font-semibold";
+                    } else if (cacheHitRatio >= 0.95) {
+                      cacheColorClass = "text-amber-600 font-semibold";
+                    } else {
+                      cacheColorClass = "text-red-600 font-semibold";
+                    }
+                  }
+
+                  return (
+                    <tr key={row.relation} className="border-b border-slate-50 hover:bg-slate-50/60">
+                      <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{row.relation}</td>
+                      <td className="py-2 pr-4">{formatBytes(row.total_bytes)}</td>
+                      <td className="py-2 pr-4">{formatBytes(row.table_bytes)}</td>
+                      <td className="py-2 pr-4">{formatBytes(row.index_bytes)}</td>
+                      <td className="py-2 pr-4">{formatBytes(row.toast_bytes)}</td>
+                      <td className={`py-2 pr-4 ${cacheColorClass}`}>
+                        {cacheHitRatio !== null && cacheHitRatio !== undefined
+                          ? `${(cacheHitRatio * 100).toFixed(1)}%`
+                          : "—"}
+                      </td>
+                      <td className="py-2 pr-4">
+                        {formatPercentMaybe(row.dead_tuple_ratio)}
+                      </td>
+                      <td className="py-2 pr-4">
+                        {row.estimated_bloat_bytes !== undefined && row.estimated_bloat_bytes !== null
+                          ? formatBytes(row.estimated_bloat_bytes)
+                          : "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
