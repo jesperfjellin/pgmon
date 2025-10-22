@@ -5,6 +5,7 @@ mod http;
 mod metrics;
 mod persistence;
 mod poller;
+mod recommendations;
 mod state;
 
 use std::io::ErrorKind;
