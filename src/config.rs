@@ -160,6 +160,9 @@ pub struct BloatConfig {
     /// Enable pageinspect-based heap-level analysis (requires pageinspect extension)
     #[serde(default)]
     pub enable_pageinspect: bool,
+    /// Minimum reclaimable bytes to recommend VACUUM FULL (default: 100 MB)
+    #[serde(default = "BloatConfig::default_min_reclaim_bytes")]
+    pub min_reclaim_bytes: u32,
 }
 
 impl BloatConfig {
@@ -170,6 +173,10 @@ impl BloatConfig {
     const fn default_top_n_tables() -> u32 {
         10
     }
+
+    const fn default_min_reclaim_bytes() -> u32 {
+        100 * 1024 * 1024 // 100 MB
+    }
 }
 
 impl Default for BloatConfig {
@@ -178,6 +185,7 @@ impl Default for BloatConfig {
             sampling_mode: Self::default_sampling_mode(),
             top_n_tables: Self::default_top_n_tables(),
             enable_pageinspect: false,
+            min_reclaim_bytes: Self::default_min_reclaim_bytes(),
         }
     }
 }

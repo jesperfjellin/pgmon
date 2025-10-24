@@ -36,6 +36,9 @@ bloat:
   top_n_tables: 10
   # Enable pageinspect for heap-level fragment analysis (requires pageinspect extension).
   enable_pageinspect: false
+  # Minimum reclaimable bytes to recommend VACUUM FULL (default: 104857600 = 100 MB).
+  # Prevents recommending VACUUM FULL for tiny tables where the overhead outweighs the benefit.
+  min_reclaim_bytes: 104857600
 
 alerts:
   connections_warn: 0.80

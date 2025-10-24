@@ -139,6 +139,7 @@ async fn get_recommendations(State(ctx): State<AppContext>) -> Json<Recommendati
         &snapshots.bloat_samples,
         &snapshots.autovacuum,
         &snapshots.stale_stats,
+        ctx.config.bloat.min_reclaim_bytes,
     );
     Json(RecommendationsResponse { recommendations })
 }

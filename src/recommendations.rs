@@ -48,6 +48,7 @@ pub fn generate_recommendations(
     bloat: &[BloatSample],
     autovac: &[AutovacuumEntry],
     stale_stats: &[StaleStatEntry],
+    min_reclaim_bytes: u32,
 ) -> Vec<Recommendation> {
     let mut recommendations = Vec::new();
 
@@ -55,7 +56,7 @@ pub fn generate_recommendations(
     recommendations.extend(generate_vacuum_analyze_recommendations(storage, autovac));
 
     // Generate VACUUM FULL recommendations
-    recommendations.extend(generate_vacuum_full_recommendations(bloat, storage));
+    recommendations.extend(generate_vacuum_full_recommendations(bloat, storage, min_reclaim_bytes));
 
     // Generate ANALYZE recommendations
     recommendations.extend(generate_analyze_recommendations(stale_stats));
@@ -178,6 +179,7 @@ fn generate_vacuum_analyze_recommendations(
 fn generate_vacuum_full_recommendations(
     bloat: &[BloatSample],
     storage: &[StorageEntry],
+    min_reclaim_bytes: u32,
 ) -> Vec<Recommendation> {
     let mut recommendations = Vec::new();
 
@@ -186,10 +188,13 @@ fn generate_vacuum_full_recommendations(
         // 1. Free space > 40%
         // 2. Dead tuple % is low (< 5%) OR not available (approx mode)
         //    This indicates the space is truly wasted, not just needs regular VACUUM
+        // 3. Reclaimable space meets minimum threshold (default 100 MB)
         let free_percent = sample.free_percent;
         let dead_percent = sample.dead_tuple_percent.unwrap_or(0.0);
 
-        let needs_vacuum_full = free_percent > 40.0 && dead_percent < 5.0;
+        let needs_vacuum_full = free_percent > 40.0
+            && dead_percent < 5.0
+            && sample.free_bytes >= min_reclaim_bytes as i64;
 
         if !needs_vacuum_full {
             continue;
