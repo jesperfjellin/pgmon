@@ -75,6 +75,8 @@ export interface TopQueryEntry {
   shared_blks_read: number;
   shared_blks_hit: number;
   cache_hit_ratio: number;
+  query_text?: string | null;
+  table_names?: string | null;
 }
 
 export interface StaleStatEntry {

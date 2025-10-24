@@ -211,7 +211,10 @@ async fn update_workload_overview(ctx: &AppContext) -> Result<()> {
 
 async fn update_top_queries(ctx: &AppContext) -> Result<()> {
     let limit = ctx.config.limits.top_queries as i64;
-    let rows = sqlx::query(
+    let redact_sql = ctx.config.security.redact_sql_text;
+
+    // Conditionally include query text based on redact_sql_text setting
+    let sql = if redact_sql {
         r#"
         SELECT
             queryid,
@@ -219,12 +222,29 @@ async fn update_top_queries(ctx: &AppContext) -> Result<()> {
             total_exec_time AS total_time,
             mean_exec_time AS mean_time,
             shared_blks_read,
-            shared_blks_hit
+            shared_blks_hit,
+            NULL::text AS query
         FROM pg_stat_statements
         ORDER BY total_time DESC
         LIMIT $1
-        "#,
-    )
+        "#
+    } else {
+        r#"
+        SELECT
+            queryid,
+            calls,
+            total_exec_time AS total_time,
+            mean_exec_time AS mean_time,
+            shared_blks_read,
+            shared_blks_hit,
+            query
+        FROM pg_stat_statements
+        ORDER BY total_time DESC
+        LIMIT $1
+        "#
+    };
+
+    let rows = sqlx::query(sql)
     .bind(limit)
     .fetch_all(&ctx.pool)
     .await;
@@ -239,6 +259,7 @@ async fn update_top_queries(ctx: &AppContext) -> Result<()> {
                 let mean_time_ms: f64 = row.try_get("mean_time")?;
                 let shared_blks_read: i64 = row.try_get("shared_blks_read")?;
                 let shared_blks_hit: i64 = row.try_get("shared_blks_hit")?;
+                let query_text: Option<String> = row.try_get("query")?;
 
                 // Calculate cache hit ratio
                 let total_blks = shared_blks_read + shared_blks_hit;
@@ -248,6 +269,9 @@ async fn update_top_queries(ctx: &AppContext) -> Result<()> {
                     1.0 // No I/O = perfect cache hit
                 };
 
+                // Extract table names from query text
+                let table_names = query_text.as_ref().and_then(|q| extract_table_names(q));
+
                 entries.push(TopQueryEntry {
                     queryid,
                     calls,
@@ -256,6 +280,8 @@ async fn update_top_queries(ctx: &AppContext) -> Result<()> {
                     shared_blks_read,
                     shared_blks_hit,
                     cache_hit_ratio,
+                    query_text,
+                    table_names,
                 });
             }
             ctx.metrics
@@ -796,5 +822,57 @@ fn ratio_from_counts(dead: i64, live: i64) -> f64 {
         0.0
     } else {
         dead as f64 / total as f64
+    }
+}
+
+/// Extract table names from SQL query text.
+/// Looks for tables in INSERT, UPDATE, DELETE, FROM, and JOIN clauses.
+fn extract_table_names(query: &str) -> Option<String> {
+    use regex::Regex;
+
+    // Match table names after DML keywords (INSERT INTO, UPDATE, DELETE FROM)
+    // and query keywords (FROM, JOIN)
+    // Handles schema.table and basic table names
+    // For UPDATE: must NOT be followed by SET (to avoid matching "DO UPDATE SET" in ON CONFLICT)
+    let re = Regex::new(
+        r"(?i)\b(?:INSERT\s+INTO|DELETE\s+FROM|FROM|JOIN)\s+(?:ONLY\s+)?([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?)"
+    ).ok()?;
+
+    // Separate pattern for UPDATE to ensure it's followed by a table name, not SET
+    let update_re = Regex::new(
+        r"(?i)\bUPDATE\s+(?:ONLY\s+)?([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?)\s+SET"
+    ).ok()?;
+
+    let mut tables = Vec::new();
+
+    // Extract from INSERT, DELETE, FROM, JOIN
+    for cap in re.captures_iter(query) {
+        if let Some(table) = cap.get(1) {
+            let table_str = table.as_str().trim();
+            if !table_str.is_empty() && !tables.contains(&table_str) {
+                tables.push(table_str);
+            }
+        }
+    }
+
+    // Extract from UPDATE ... SET
+    for cap in update_re.captures_iter(query) {
+        if let Some(table) = cap.get(1) {
+            let table_str = table.as_str().trim();
+            if !table_str.is_empty() && !tables.contains(&table_str) {
+                tables.push(table_str);
+            }
+        }
+    }
+
+    if tables.is_empty() {
+        return None;
+    }
+
+    // Format: show up to 3 tables, then "..."
+    if tables.len() <= 3 {
+        Some(tables.join(", "))
+    } else {
+        Some(format!("{}, {}... (+{})", tables[0], tables[1], tables.len() - 2))
     }
 }

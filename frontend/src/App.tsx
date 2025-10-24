@@ -599,6 +599,7 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
 
 function WorkloadTab({ queries }: { queries: TopQueryEntry[] }) {
   const topQueries = useMemo(() => queries.slice(0, 10), [queries]);
+  const [selectedQuery, setSelectedQuery] = useState<TopQueryEntry | null>(null);
 
   return (
     <div className="space-y-4">
@@ -614,6 +615,7 @@ function WorkloadTab({ queries }: { queries: TopQueryEntry[] }) {
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="text-left text-slate-500 border-b border-slate-100">
+                  <th className="py-2 pr-4">Table</th>
                   <th className="py-2 pr-4">Query ID</th>
                   <th className="py-2 pr-4">Calls</th>
                   <th className="py-2 pr-4">Total Time (s)</th>
@@ -635,7 +637,21 @@ function WorkloadTab({ queries }: { queries: TopQueryEntry[] }) {
 
                   return (
                     <tr key={q.queryid} className="border-b border-slate-50 hover:bg-slate-50/60">
-                      <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{q.queryid}</td>
+                      <td className="py-2 pr-4 text-slate-600">
+                        {q.table_names || <span className="text-slate-400">–</span>}
+                      </td>
+                      <td className="py-2 pr-4 font-mono text-[12px]">
+                        {q.query_text ? (
+                          <button
+                            onClick={() => setSelectedQuery(q)}
+                            className="text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
+                          >
+                            {q.queryid}
+                          </button>
+                        ) : (
+                          <span className="text-slate-700">{q.queryid}</span>
+                        )}
+                      </td>
                       <td className="py-2 pr-4">{numberFormatter.format(q.calls)}</td>
                       <td className="py-2 pr-4">{q.total_time_seconds.toFixed(2)}</td>
                       <td className="py-2 pr-4">{q.mean_time_ms.toFixed(2)}</td>
@@ -660,6 +676,62 @@ function WorkloadTab({ queries }: { queries: TopQueryEntry[] }) {
           </div>
         </CardBody>
       </Card>
+
+      {/* Query Detail Modal */}
+      {selectedQuery && selectedQuery.query_text && (
+        <div
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+          onClick={() => setSelectedQuery(null)}
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl max-w-4xl w-full max-h-[80vh] overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between p-4 border-b border-slate-200">
+              <h3 className="text-lg font-semibold text-slate-900">
+                Query Details
+                <span className="ml-2 text-sm font-mono text-slate-500">
+                  ID: {selectedQuery.queryid}
+                </span>
+              </h3>
+              <button
+                onClick={() => setSelectedQuery(null)}
+                className="text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <svg className="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+            <div className="p-4 overflow-y-auto max-h-[calc(80vh-8rem)]">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4 text-sm">
+                <div>
+                  <div className="text-slate-500">Calls</div>
+                  <div className="font-semibold">{numberFormatter.format(selectedQuery.calls)}</div>
+                </div>
+                <div>
+                  <div className="text-slate-500">Total Time</div>
+                  <div className="font-semibold">{selectedQuery.total_time_seconds.toFixed(2)}s</div>
+                </div>
+                <div>
+                  <div className="text-slate-500">Mean Time</div>
+                  <div className="font-semibold">{selectedQuery.mean_time_ms.toFixed(2)}ms</div>
+                </div>
+                <div>
+                  <div className="text-slate-500">Cache Hit</div>
+                  <div className="font-semibold">{(selectedQuery.cache_hit_ratio * 100).toFixed(1)}%</div>
+                </div>
+              </div>
+              <div className="bg-slate-50 p-4 rounded border border-slate-200">
+                <div className="text-xs font-semibold text-slate-500 uppercase mb-2">SQL Query</div>
+                <pre className="text-sm font-mono text-slate-800 whitespace-pre-wrap break-words">
+                  {selectedQuery.query_text}
+                </pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <SqlSnippet sql={SQL_SNIPPETS.topQueries} />
     </div>

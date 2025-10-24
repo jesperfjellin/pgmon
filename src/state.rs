@@ -443,6 +443,8 @@ pub struct TopQueryEntry {
     pub shared_blks_read: i64,
     pub shared_blks_hit: i64,
     pub cache_hit_ratio: f64,
+    pub query_text: Option<String>,
+    pub table_names: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

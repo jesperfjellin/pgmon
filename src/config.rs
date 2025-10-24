@@ -394,12 +394,16 @@ fn default_true() -> bool {
     true
 }
 
+fn default_false() -> bool {
+    false
+}
+
 /// Security guardrails enforced by the agent.
 #[derive(Debug, Clone, Deserialize)]
 pub struct SecurityConfig {
     #[serde(default = "default_true")]
     pub read_only_enforce: bool,
-    #[serde(default = "default_true")]
+    #[serde(default = "default_false")]
     pub redact_sql_text: bool,
 }
 
@@ -407,7 +411,7 @@ impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             read_only_enforce: true,
-            redact_sql_text: true,
+            redact_sql_text: false,
         }
     }
 }

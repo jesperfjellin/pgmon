@@ -75,7 +75,9 @@ http:
 
 security:
   read_only_enforce: true
-  redact_sql_text: true
+  # Set to true to hide SQL query text in blocking events and top queries (for compliance).
+  # pg_stat_statements already normalizes queries (no literal values), so false is usually safe.
+  redact_sql_text: false
 
 ui:
   # Hide built-in postgres/template databases from wraparound panels (postgres, template0, template1).
