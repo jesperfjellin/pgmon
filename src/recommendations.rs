@@ -136,7 +136,9 @@ fn generate_vacuum_analyze_recommendations(
             format_number(dead_tuples)
         )];
 
-        if let Some(hours) = last_vacuum_age_hours && hours >= 1.0 {
+        if let Some(hours) = last_vacuum_age_hours
+            && hours >= 1.0
+        {
             rationale_parts.push(format!("and hasn't been vacuumed in {hours:.1} hours"));
         }
 

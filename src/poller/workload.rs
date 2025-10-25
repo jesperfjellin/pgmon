@@ -716,9 +716,8 @@ async fn update_autovacuum(ctx: &AppContext) -> Result<()> {
                 ctx.metrics
                     .inc_alert(ctx.cluster_name(), AlertKind::DeadTuples, severity);
 
-                let message = format!(
-                    "Dead tuple backlog {relation} ({ratio:.1}% ~{n_dead_tup} dead)"
-                );
+                let message =
+                    format!("Dead tuple backlog {relation} ({ratio:.1}% ~{n_dead_tup} dead)");
 
                 match severity {
                     AlertSeverity::Warn => warn_alerts.push(message),
