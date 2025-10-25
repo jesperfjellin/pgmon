@@ -89,7 +89,7 @@ async fn update_workload_overview(ctx: &AppContext) -> Result<()> {
         }
     };
 
-    let (checkpoints_timed, checkpoints_requested) = fetch_checkpoint_counters(&ctx).await?;
+    let (checkpoints_timed, checkpoints_requested) = fetch_checkpoint_counters(ctx).await?;
 
     let temp_bytes_row = sqlx::query(
         r#"
@@ -186,21 +186,8 @@ async fn update_workload_overview(ctx: &AppContext) -> Result<()> {
             });
         }
 
-        ctx.metrics.set_workload_metrics(
-            ctx.cluster_name(),
-            summary.tps,
-            summary.qps,
-            summary.mean_latency_ms,
-            summary.wal_bytes_total,
-            summary.wal_bytes_per_second,
-            summary.checkpoints_timed_total,
-            summary.checkpoints_requested_total,
-            summary.checkpoint_requested_ratio,
-            summary.checkpoint_mean_interval_seconds,
-            summary.temp_bytes_per_second,
-            latency.p95_ms,
-            latency.p99_ms,
-        );
+        ctx.metrics
+            .set_workload_metrics(ctx.cluster_name(), &summary);
 
         emit_wal_temp_alerts(ctx, &summary).await;
         emit_checkpoint_alerts(ctx, &summary).await;
@@ -286,16 +273,16 @@ async fn update_top_queries(ctx: &AppContext) -> Result<()> {
             ctx.state.update_top_queries(entries).await;
         }
         Err(err) => {
-            if let sqlx::Error::Database(db_err) = &err {
-                if is_missing_pg_stat_statements(&err) {
-                    warn!(
-                        error = %db_err,
-                        "pg_stat_statements unavailable; top query export disabled"
-                    );
-                    ctx.state.update_top_queries(Vec::new()).await;
-                    ctx.metrics.set_statement_metrics(ctx.cluster_name(), &[]);
-                    return Ok(());
-                }
+            if let sqlx::Error::Database(db_err) = &err
+                && is_missing_pg_stat_statements(&err)
+            {
+                warn!(
+                    error = %db_err,
+                    "pg_stat_statements unavailable; top query export disabled"
+                );
+                ctx.state.update_top_queries(Vec::new()).await;
+                ctx.metrics.set_statement_metrics(ctx.cluster_name(), &[]);
+                return Ok(());
             }
             return Err(err.into());
         }
@@ -488,7 +475,7 @@ fn format_seconds(sec: f64) -> String {
     } else if sec >= 60.0 {
         format!("{:.1}m", sec / 60.0)
     } else {
-        format!("{:.0}s", sec)
+        format!("{sec:.0}s")
     }
 }
 
@@ -730,8 +717,7 @@ async fn update_autovacuum(ctx: &AppContext) -> Result<()> {
                     .inc_alert(ctx.cluster_name(), AlertKind::DeadTuples, severity);
 
                 let message = format!(
-                    "Dead tuple backlog {} ({:.1}% ~{} dead)",
-                    relation, ratio, n_dead_tup
+                    "Dead tuple backlog {relation} ({ratio:.1}% ~{n_dead_tup} dead)"
                 );
 
                 match severity {
@@ -750,9 +736,8 @@ async fn update_autovacuum(ctx: &AppContext) -> Result<()> {
         if let Some(hours) = hours_since_maintenance {
             if hours >= thresholds.autovac_starvation_crit_hours as f64 && starvation_base > 0.05 {
                 let message = format!(
-                    "Autovac starvation critical {} ({}h since run)",
-                    relation,
-                    hours.floor()
+                    "Autovac starvation critical {relation} ({hours_floor:.0}h since run)",
+                    hours_floor = hours.floor()
                 );
                 starvation_crit.push(message);
                 ctx.metrics.inc_alert(
@@ -764,9 +749,8 @@ async fn update_autovacuum(ctx: &AppContext) -> Result<()> {
                 && starvation_base > 0.02
             {
                 let message = format!(
-                    "Autovac starvation {} ({}h since run)",
-                    relation,
-                    hours.floor()
+                    "Autovac starvation {relation} ({hours_floor:.0}h since run)",
+                    hours_floor = hours.floor()
                 );
                 starvation_warn.push(message);
                 ctx.metrics.inc_alert(
@@ -776,7 +760,7 @@ async fn update_autovacuum(ctx: &AppContext) -> Result<()> {
                 );
             }
         } else if thresholds.autovac_starvation_crit_hours > 0 {
-            let message = format!("Autovac starvation critical {} (never vacuumed)", relation);
+            let message = format!("Autovac starvation critical {relation} (never vacuumed)");
             starvation_crit.push(message);
             ctx.metrics.inc_alert(
                 ctx.cluster_name(),

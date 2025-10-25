@@ -25,6 +25,7 @@ pub struct AppConfig {
     #[serde(default)]
     pub alerts: AlertThresholds,
     #[serde(default)]
+    #[allow(dead_code)]
     pub notifiers: Notifiers,
     #[serde(default)]
     pub http: HttpConfig,
@@ -159,6 +160,7 @@ pub struct BloatConfig {
     pub top_n_tables: u32,
     /// Enable pageinspect-based heap-level analysis (requires pageinspect extension)
     #[serde(default)]
+    #[allow(dead_code)]
     pub enable_pageinspect: bool,
     /// Minimum reclaimable bytes to recommend VACUUM FULL (default: 100 MB)
     #[serde(default = "BloatConfig::default_min_reclaim_bytes")]
@@ -345,21 +347,14 @@ impl Default for AlertThresholds {
 }
 
 /// Optional notifier configuration (Slack, email, etc).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct Notifiers {
     #[serde(default)]
+    #[allow(dead_code)]
     pub slack_webhook: Option<String>,
     #[serde(default)]
+    #[allow(dead_code)]
     pub email_smtp: Option<String>,
-}
-
-impl Default for Notifiers {
-    fn default() -> Self {
-        Self {
-            slack_webhook: None,
-            email_smtp: None,
-        }
-    }
 }
 
 /// HTTP listener configuration (bind address).
@@ -416,18 +411,10 @@ impl Default for SecurityConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct UiConfig {
     #[serde(default)]
     pub hide_postgres_defaults: bool,
-}
-
-impl Default for UiConfig {
-    fn default() -> Self {
-        Self {
-            hide_postgres_defaults: false,
-        }
-    }
 }
 
 /// Postgres session timeouts.
@@ -509,10 +496,10 @@ fn enforce_yaml_policy(config: &AppConfig) -> Result<()> {
 }
 
 fn apply_env_overrides(config: &mut AppConfig) -> Result<()> {
-    if let Ok(cluster) = env::var("PGMON_CLUSTER") {
-        if !cluster.is_empty() {
-            config.cluster = cluster;
-        }
+    if let Ok(cluster) = env::var("PGMON_CLUSTER")
+        && !cluster.is_empty()
+    {
+        config.cluster = cluster;
     }
 
     match env::var("PGMON_DSN") {

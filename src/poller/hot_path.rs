@@ -204,26 +204,26 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
                 AlertSeverity::Warn,
             );
         }
-        if let Some(crit) = alerts_cfg.connections_crit {
-            if ratio >= crit {
-                open_crit_alerts.push(format!(
-                    "Connections critical {:.0}% ({}/{})",
-                    ratio * 100.0,
-                    connections,
-                    max_connections
-                ));
-                ctx.metrics.inc_alert(
-                    ctx.cluster_name(),
-                    AlertKind::Connections,
-                    AlertSeverity::Crit,
-                );
-            }
+        if let Some(crit) = alerts_cfg.connections_crit
+            && ratio >= crit
+        {
+            open_crit_alerts.push(format!(
+                "Connections critical {:.0}% ({}/{})",
+                ratio * 100.0,
+                connections,
+                max_connections
+            ));
+            ctx.metrics.inc_alert(
+                ctx.cluster_name(),
+                AlertKind::Connections,
+                AlertSeverity::Crit,
+            );
         }
     }
 
     if let Some(tx) = longest_tx {
         if tx >= alerts_cfg.long_txn_warn_s as f64 {
-            open_alerts.push(format!("Longest transaction {:.0}s", tx));
+            open_alerts.push(format!("Longest transaction {tx:.0}s"));
             ctx.metrics.inc_alert(
                 ctx.cluster_name(),
                 AlertKind::LongTransaction,
@@ -231,7 +231,7 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
             );
         }
         if tx >= alerts_cfg.long_txn_crit_s as f64 {
-            open_crit_alerts.push(format!("Longest transaction critical {:.0}s", tx));
+            open_crit_alerts.push(format!("Longest transaction critical {tx:.0}s"));
             ctx.metrics.inc_alert(
                 ctx.cluster_name(),
                 AlertKind::LongTransaction,
@@ -242,7 +242,7 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
 
     if let Some(blocked) = longest_blocked {
         if blocked >= alerts_cfg.long_txn_warn_s as f64 {
-            open_alerts.push(format!("Longest blocked session {:.0}s", blocked));
+            open_alerts.push(format!("Longest blocked session {blocked:.0}s"));
             ctx.metrics.inc_alert(
                 ctx.cluster_name(),
                 AlertKind::BlockedSession,
@@ -250,7 +250,7 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
             );
         }
         if blocked >= alerts_cfg.long_txn_crit_s as f64 {
-            open_crit_alerts.push(format!("Longest blocked session critical {:.0}s", blocked));
+            open_crit_alerts.push(format!("Longest blocked session critical {blocked:.0}s"));
             ctx.metrics.inc_alert(
                 ctx.cluster_name(),
                 AlertKind::BlockedSession,

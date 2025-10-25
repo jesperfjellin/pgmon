@@ -143,72 +143,61 @@ impl AppMetrics {
         );
     }
 
-    pub fn set_workload_metrics(
-        &self,
-        cluster: &str,
-        tps: Option<f64>,
-        qps: Option<f64>,
-        mean_latency_ms: Option<f64>,
-        wal_bytes_total: Option<i64>,
-        wal_bytes_per_second: Option<f64>,
-        checkpoints_timed_total: Option<i64>,
-        checkpoints_requested_total: Option<i64>,
-        checkpoint_requested_ratio: Option<f64>,
-        checkpoint_mean_interval_seconds: Option<f64>,
-        temp_bytes_per_second: Option<f64>,
-        latency_p95_ms: Option<f64>,
-        latency_p99_ms: Option<f64>,
-    ) {
-        set_optional_gauge(&self.workload.tps, cluster, tps);
-        set_optional_gauge(&self.workload.qps, cluster, qps);
-        let mean_latency_seconds = mean_latency_ms.map(|ms| ms / 1_000.0);
+    pub fn set_workload_metrics(&self, cluster: &str, summary: &crate::state::WorkloadSummary) {
+        set_optional_gauge(&self.workload.tps, cluster, summary.tps);
+        set_optional_gauge(&self.workload.qps, cluster, summary.qps);
+        let mean_latency_seconds = summary.mean_latency_ms.map(|ms| ms / 1_000.0);
         set_optional_gauge(
             &self.workload.mean_latency_seconds,
             cluster,
             mean_latency_seconds,
         );
-        let latency_p95_seconds = latency_p95_ms.map(|ms| ms / 1_000.0);
+        let latency_p95_seconds = summary.latency_p95_ms.map(|ms| ms / 1_000.0);
         set_optional_gauge(
             &self.workload.latency_seconds_p95,
             cluster,
             latency_p95_seconds,
         );
-        let latency_p99_seconds = latency_p99_ms.map(|ms| ms / 1_000.0);
+        let latency_p99_seconds = summary.latency_p99_ms.map(|ms| ms / 1_000.0);
         set_optional_gauge(
             &self.workload.latency_seconds_p99,
             cluster,
             latency_p99_seconds,
         );
-        set_optional_int_gauge(&self.workload.wal_bytes_total, cluster, wal_bytes_total);
+        set_optional_int_gauge(
+            &self.workload.wal_bytes_total,
+            cluster,
+            summary.wal_bytes_total,
+        );
         set_optional_gauge(
             &self.workload.wal_bytes_per_second,
             cluster,
-            wal_bytes_per_second,
+            summary.wal_bytes_per_second,
         );
         set_optional_int_gauge(
             &self.workload.checkpoints_timed_total,
             cluster,
-            checkpoints_timed_total,
+            summary.checkpoints_timed_total,
         );
         set_optional_int_gauge(
             &self.workload.checkpoints_requested_total,
             cluster,
-            checkpoints_requested_total,
+            summary.checkpoints_requested_total,
         );
         set_optional_gauge(
             &self.workload.checkpoint_requested_ratio,
             cluster,
-            checkpoint_requested_ratio,
+            summary.checkpoint_requested_ratio,
         );
         set_optional_gauge(
             &self.workload.checkpoint_mean_interval_seconds,
             cluster,
-            checkpoint_mean_interval_seconds,
+            summary.checkpoint_mean_interval_seconds,
         );
         set_optional_gauge(
             &self.workload.temp_bytes_per_second,
             cluster,
-            temp_bytes_per_second,
+            summary.temp_bytes_per_second,
         );
     }
 
@@ -451,7 +440,7 @@ impl AppMetrics {
         }
 
         for (&phase, &value) in counts.iter() {
-            if !AUTOVACUUM_PHASES.iter().any(|known| *known == phase) {
+            if !AUTOVACUUM_PHASES.contains(&phase) {
                 let label = sanitize_label(phase);
                 self.hot_path
                     .autovac_jobs

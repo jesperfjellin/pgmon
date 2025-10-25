@@ -127,7 +127,7 @@ async fn update_partitions(ctx: &AppContext) -> Result<()> {
                 if let Some(lower_value) = accumulator.starts.last().cloned() {
                     match accumulator.oldest_start {
                         Some(existing) if lower_value >= existing => {}
-                        _ => accumulator.oldest_start = Some(lower_value.clone()),
+                        _ => accumulator.oldest_start = Some(lower_value),
                     }
                     match accumulator.newest_start {
                         Some(existing) if lower_value <= existing => {}
@@ -453,8 +453,7 @@ async fn update_bloat_samples(ctx: &AppContext) -> Result<()> {
             (BLOAT_SAMPLE_SQL, ctx.config.limits.top_relations as i64)
         }
         _ => anyhow::bail!(
-            "Invalid bloat.sampling_mode '{}'; must be 'approx' or 'exact'",
-            sampling_mode
+            "Invalid bloat.sampling_mode '{sampling_mode}'; must be 'approx' or 'exact'"
         ),
     };
 
@@ -523,8 +522,7 @@ async fn emit_wraparound_alerts(ctx: &AppContext, snapshot: &WraparoundSnapshot)
             "database",
             &db.database,
             db.tx_age,
-            warn_age,
-            crit_age,
+            (warn_age, crit_age),
         );
     }
 
@@ -536,8 +534,7 @@ async fn emit_wraparound_alerts(ctx: &AppContext, snapshot: &WraparoundSnapshot)
             "relation",
             &rel.relation,
             rel.tx_age,
-            warn_age,
-            crit_age,
+            (warn_age, crit_age),
         );
     }
 
@@ -562,9 +559,9 @@ fn classify_wraparound(
     kind: &str,
     name: &str,
     tx_age: i64,
-    warn_age: i64,
-    crit_age: i64,
+    thresholds: (i64, i64),
 ) {
+    let (warn_age, crit_age) = thresholds;
     if tx_age >= crit_age {
         let message = format!(
             "Wraparound {kind} critical {name} age {}",
@@ -789,7 +786,7 @@ fn format_cadence(cadence_seconds: i64) -> String {
     } else if cadence_seconds >= 60 {
         format!("{:.1}m", cadence_seconds as f64 / 60.0)
     } else {
-        format!("{}s", cadence_seconds)
+        format!("{cadence_seconds}s")
     }
 }
 
@@ -904,16 +901,16 @@ fn parse_datetime_string(value: &str) -> Option<DateTime<Utc>> {
         return Some(Utc.from_utc_datetime(&date_time));
     }
 
-    if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
-        if let Some(dt) = date.and_hms_opt(0, 0, 0) {
-            return Some(Utc.from_utc_datetime(&dt));
-        }
+    if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d")
+        && let Some(dt) = date.and_hms_opt(0, 0, 0)
+    {
+        return Some(Utc.from_utc_datetime(&dt));
     }
 
-    if let Ok(date) = NaiveDate::parse_from_str(value, "%Y%m%d") {
-        if let Some(dt) = date.and_hms_opt(0, 0, 0) {
-            return Some(Utc.from_utc_datetime(&dt));
-        }
+    if let Ok(date) = NaiveDate::parse_from_str(value, "%Y%m%d")
+        && let Some(dt) = date.and_hms_opt(0, 0, 0)
+    {
+        return Some(Utc.from_utc_datetime(&dt));
     }
 
     None

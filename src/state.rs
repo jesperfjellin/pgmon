@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
 /// Aggregated snapshots that back the REST API.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct AppSnapshots {
     pub overview: OverviewSnapshot,
     pub autovacuum: Vec<AutovacuumEntry>,
@@ -19,23 +19,6 @@ pub struct AppSnapshots {
     pub partitions: Vec<PartitionSlice>,
     pub replication: Vec<ReplicaLag>,
     pub wraparound: WraparoundSnapshot,
-}
-
-impl Default for AppSnapshots {
-    fn default() -> Self {
-        Self {
-            overview: OverviewSnapshot::default(),
-            autovacuum: Vec::new(),
-            top_queries: Vec::new(),
-            storage: Vec::new(),
-            stale_stats: Vec::new(),
-            unused_indexes: Vec::new(),
-            bloat_samples: Vec::new(),
-            partitions: Vec::new(),
-            replication: Vec::new(),
-            wraparound: WraparoundSnapshot::default(),
-        }
-    }
 }
 
 // =============================
@@ -367,15 +350,12 @@ impl MetricHistory {
         let one_year_ago = now - chrono::Duration::days(365);
         self.weekly.retain(|w| {
             // Parse "YYYY-Www" format
-            if let Some((year_str, week_str)) = w.week.split_once("-W") {
-                if let (Ok(year), Ok(week)) = (year_str.parse::<i32>(), week_str.parse::<u32>()) {
-                    // Create a date from the ISO week (use Monday as representative)
-                    if let Some(week_date) =
-                        chrono::NaiveDate::from_isoywd_opt(year, week, chrono::Weekday::Mon)
-                    {
-                        return week_date >= one_year_ago.date_naive();
-                    }
-                }
+            if let Some((year_str, week_str)) = w.week.split_once("-W")
+                && let (Ok(year), Ok(week)) = (year_str.parse::<i32>(), week_str.parse::<u32>())
+                && let Some(week_date) =
+                    chrono::NaiveDate::from_isoywd_opt(year, week, chrono::Weekday::Mon)
+            {
+                return week_date >= one_year_ago.date_naive();
             }
             false
         });

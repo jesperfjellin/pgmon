@@ -32,10 +32,10 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
         );
 
         // Trigger an immediate persistence flush after creating new daily summaries
-        if let Some(persist_cfg) = &crate::persistence::PersistenceConfig::from_env() {
-            if let Err(err) = crate::persistence::flush_once(persist_cfg, &ctx.state).await {
-                tracing::error!(error=?err, "failed to flush after daily aggregation");
-            }
+        if let Some(persist_cfg) = &crate::persistence::PersistenceConfig::from_env()
+            && let Err(err) = crate::persistence::flush_once(persist_cfg, &ctx.state).await
+        {
+            tracing::error!(error=?err, "failed to flush after daily aggregation");
         }
     }
 
@@ -55,10 +55,10 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
             );
 
             // Trigger an immediate persistence flush after creating new weekly summaries
-            if let Some(persist_cfg) = &crate::persistence::PersistenceConfig::from_env() {
-                if let Err(err) = crate::persistence::flush_once(persist_cfg, &ctx.state).await {
-                    tracing::error!(error=?err, "failed to flush after weekly aggregation");
-                }
+            if let Some(persist_cfg) = &crate::persistence::PersistenceConfig::from_env()
+                && let Err(err) = crate::persistence::flush_once(persist_cfg, &ctx.state).await
+            {
+                tracing::error!(error=?err, "failed to flush after weekly aggregation");
             }
         }
     }

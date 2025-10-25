@@ -10,6 +10,7 @@ pub enum RecommendationKind {
     VacuumAnalyze,
     VacuumFull,
     Analyze,
+    #[allow(dead_code)]
     Reindex,
     AutovacuumTuning,
 }
@@ -135,10 +136,8 @@ fn generate_vacuum_analyze_recommendations(
             format_number(dead_tuples)
         )];
 
-        if let Some(hours) = last_vacuum_age_hours {
-            if hours >= 1.0 {
-                rationale_parts.push(format!("and hasn't been vacuumed in {:.1} hours", hours));
-            }
+        if let Some(hours) = last_vacuum_age_hours && hours >= 1.0 {
+            rationale_parts.push(format!("and hasn't been vacuumed in {hours:.1} hours"));
         }
 
         if let Some(reclaim) = reclaim_bytes {
@@ -306,8 +305,7 @@ fn generate_analyze_recommendations(stale_stats: &[StaleStatEntry]) -> Vec<Recom
         };
 
         let rationale = format!(
-            "Table statistics are {:.1} hours old (last analyzed: {}). Running ANALYZE will help the query planner choose better indexes and execution plans.",
-            hours, last_analyze_str
+            "Table statistics are {hours:.1} hours old (last analyzed: {last_analyze_str}). Running ANALYZE will help the query planner choose better indexes and execution plans."
         );
 
         // ANALYZE is typically fast, estimate based on table size (~1GB/sec scan)
@@ -363,8 +361,7 @@ fn generate_autovacuum_tuning_recommendations(
 
         // Rule 1: High-churn tables needing more aggressive autovacuum
         // Dead ratio between 10-20% on tables with recent vacuum = autovacuum not keeping up
-        let is_high_churn = dead_ratio >= 10.0
-            && dead_ratio < 20.0
+        let is_high_churn = (10.0..20.0).contains(&dead_ratio)
             && n_live_tup > 100_000
             && hours_since_autovac.map(|h| h < 24.0).unwrap_or(false);
 
@@ -412,14 +409,13 @@ fn generate_autovacuum_tuning_recommendations(
                     if h >= 24.0 {
                         format!("in {:.1} days", h / 24.0)
                     } else {
-                        format!("in {:.1} hours", h)
+                        format!("in {h:.1} hours")
                     }
                 })
                 .unwrap_or_else(|| "ever".to_string());
 
             format!(
-                "Table has {:.1}% dead tuples and hasn't been autovacuumed {}. Autovacuum may be disabled or unable to keep up. Setting aggressive per-table thresholds will trigger more frequent vacuums",
-                dead_ratio, since_str
+                "Table has {dead_ratio:.1}% dead tuples and hasn't been autovacuumed {since_str}. Autovacuum may be disabled or unable to keep up. Setting aggressive per-table thresholds will trigger more frequent vacuums"
             )
         } else if is_high_churn {
             let since_str = hours_since_autovac
@@ -427,14 +423,13 @@ fn generate_autovacuum_tuning_recommendations(
                     if h >= 24.0 {
                         format!("in {:.1} days", h / 24.0)
                     } else {
-                        format!("in {:.1} hours", h)
+                        format!("in {h:.1} hours")
                     }
                 })
                 .unwrap_or_else(|| "recently".to_string());
 
             format!(
-                "Table has {:.1}% dead tuples despite recent autovacuum ({}). High churn rate requires more aggressive autovacuum settings to prevent bloat",
-                dead_ratio, since_str
+                "Table has {dead_ratio:.1}% dead tuples despite recent autovacuum ({since_str}). High churn rate requires more aggressive autovacuum settings to prevent bloat"
             )
         } else {
             // is_large_table
@@ -445,13 +440,12 @@ fn generate_autovacuum_tuning_recommendations(
         };
 
         let sql_command = format!(
-            "ALTER TABLE {} SET (\n  autovacuum_vacuum_scale_factor = {},\n  autovacuum_vacuum_threshold = {}\n);",
-            storage_entry.relation, suggested_scale_factor, suggested_threshold
+            "ALTER TABLE {} SET (\n  autovacuum_vacuum_scale_factor = {suggested_scale_factor},\n  autovacuum_vacuum_threshold = {suggested_threshold}\n);",
+            storage_entry.relation
         );
 
         let full_rationale = format!(
-            "{}. Suggested settings: scale_factor={} (default: 0.2), threshold={} (default: 50).",
-            rationale, suggested_scale_factor, suggested_threshold
+            "{rationale}. Suggested settings: scale_factor={suggested_scale_factor} (default: 0.2), threshold={suggested_threshold} (default: 50)."
         );
 
         recommendations.push(Recommendation {
@@ -487,7 +481,7 @@ fn format_bytes(bytes: i64) -> String {
     } else if bytes >= KB {
         format!("{:.2} KB", bytes as f64 / KB as f64)
     } else {
-        format!("{} bytes", bytes)
+        format!("{bytes} bytes")
     }
 }
 
