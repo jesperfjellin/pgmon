@@ -36,7 +36,7 @@ import {
 } from "./api";
 import { Badge, Card, CardHeader, CardBody, MetricCard, Section, SqlSnippet, formatPercentMaybe } from "./components/ui";
 import { useRef } from 'react';
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, ComposedChart, ReferenceArea, ReferenceLine } from 'recharts';
 
 const numberFormatter = new Intl.NumberFormat();
 
@@ -378,6 +378,96 @@ const tabs = [
 ] as const;
 
 // ---------- Panel Components ----------
+function WraparoundRiskGraph({
+  xidData,
+  mxidData,
+}: {
+  xidData: { ts: number; value: number }[];
+  mxidData: { ts: number; value: number }[];
+}) {
+  // Combine both series into single data array for chart
+  const chartData = useMemo(() => {
+    const xidMap = new Map(xidData.map(p => [p.ts, p.value]));
+    const mxidMap = new Map(mxidData.map(p => [p.ts, p.value]));
+    const allTs = new Set([...xidData.map(p => p.ts), ...mxidData.map(p => p.ts)]);
+
+    return Array.from(allTs)
+      .sort((a, b) => a - b)
+      .map(ts => ({
+        ts,
+        xidPct: xidMap.get(ts) ?? null,
+        mxidPct: mxidMap.get(ts) ?? null,
+      }));
+  }, [xidData, mxidData]);
+
+  const hasData = chartData.length > 0;
+
+  return (
+    <Card>
+      <CardHeader
+        title="Wraparound Risk"
+        icon={<Lock className="h-4 w-4 text-slate-500" />}
+      />
+      <CardBody>
+        {hasData ? (
+          <div className="h-80 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={chartData} margin={{ left: 8, right: 16, top: 8, bottom: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis
+                  dataKey="ts"
+                  type="number"
+                  domain={['auto','auto']}
+                  tickFormatter={(ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  stroke="#64748b"
+                />
+                <YAxis domain={[0, 100]} ticks={[0, 50, 70, 85, 100]} tickFormatter={(v) => `${v}%`} stroke="#64748b" />
+
+                {/* Reference bands */}
+                <ReferenceArea y1={70} y2={85} fill="#f59e0b" fillOpacity={0.08} />
+                <ReferenceArea y1={85} y2={100} fill="#ef4444" fillOpacity={0.08} />
+                <ReferenceLine y={70} strokeDasharray="4 4" stroke="#f59e0b" strokeOpacity={0.5} />
+                <ReferenceLine y={85} strokeDasharray="4 4" stroke="#ef4444" strokeOpacity={0.5} />
+
+                {/* Series */}
+                <Line
+                  type="stepAfter"
+                  dataKey="xidPct"
+                  name="XID %"
+                  stroke="#3b82f6"
+                  strokeWidth={2}
+                  dot={false}
+                  connectNulls
+                />
+                <Line
+                  type="stepAfter"
+                  dataKey="mxidPct"
+                  name="MXID %"
+                  stroke="#8b5cf6"
+                  strokeWidth={1.5}
+                  dot={false}
+                  connectNulls
+                />
+
+                <Tooltip
+                  formatter={(val: any, name: string) => [`${typeof val === 'number' ? val.toFixed(1) : '–'}%`, name]}
+                  labelFormatter={(ts) => new Date(ts as number).toLocaleString()}
+                  contentStyle={{ backgroundColor: 'white', border: '1px solid #e2e8f0', borderRadius: '8px' }}
+                />
+                <Legend verticalAlign="top" align="right" />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="h-80 flex items-center justify-center text-slate-400">
+            No wraparound data available
+          </div>
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
 function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
   // History-derived KPI series
   const [loaded, setLoaded] = useState(false);
@@ -390,6 +480,8 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
     latency_p95_ms: { ts: number; value: number }[];
     latency_p99_ms: { ts: number; value: number }[];
     blocked_sessions: { ts: number; value: number }[];
+    wraparound_xid_pct: { ts: number; value: number }[];
+    wraparound_mxid_pct: { ts: number; value: number }[];
   }>({
     connections: [],
     tps: [],
@@ -398,6 +490,8 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
     latency_p95_ms: [],
     latency_p99_ms: [],
     blocked_sessions: [],
+    wraparound_xid_pct: [],
+    wraparound_mxid_pct: [],
   });
   // Track last timestamp to enable incremental polling
   const lastTsRef = useRef<number | null>(null);
@@ -419,6 +513,8 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
             latency_p95_ms: shape(json.latency_p95_ms || []),
             latency_p99_ms: shape(json.latency_p99_ms || []),
             blocked_sessions: shape(json.blocked_sessions || []),
+            wraparound_xid_pct: shape(json.wraparound_xid_pct || []),
+            wraparound_mxid_pct: shape(json.wraparound_mxid_pct || []),
         });
         // Establish lastTs from maximum across all returned series
         const allTs = [
@@ -429,6 +525,8 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
           ...((json.latency_p95_ms || []).map((p:any)=>p.ts)),
           ...((json.latency_p99_ms || []).map((p:any)=>p.ts)),
           ...((json.blocked_sessions || []).map((p:any)=>p.ts)),
+          ...((json.wraparound_xid_pct || []).map((p:any)=>p.ts)),
+          ...((json.wraparound_mxid_pct || []).map((p:any)=>p.ts)),
         ];
         lastTsRef.current = allTs.length ? Math.max(...allTs) * 1000 : null; // store ms
         setLoaded(true);
@@ -462,6 +560,8 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
           latency_p95_ms: merge(prev.latency_p95_ms, json.latency_p95_ms || []),
           latency_p99_ms: merge(prev.latency_p99_ms, json.latency_p99_ms || []),
           blocked_sessions: merge(prev.blocked_sessions, json.blocked_sessions || []),
+          wraparound_xid_pct: merge(prev.wraparound_xid_pct, json.wraparound_xid_pct || []),
+          wraparound_mxid_pct: merge(prev.wraparound_mxid_pct, json.wraparound_mxid_pct || []),
         }));
         const newTs = [
           ...((json.connections || []).map((p:any)=>p.ts)),
@@ -471,6 +571,8 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
           ...((json.latency_p95_ms || []).map((p:any)=>p.ts)),
           ...((json.latency_p99_ms || []).map((p:any)=>p.ts)),
           ...((json.blocked_sessions || []).map((p:any)=>p.ts)),
+          ...((json.wraparound_xid_pct || []).map((p:any)=>p.ts)),
+          ...((json.wraparound_mxid_pct || []).map((p:any)=>p.ts)),
         ];
         if (newTs.length) {
           const newest = Math.max(...newTs) * 1000;
@@ -543,54 +645,55 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
         ))}
       </div>
 
-      {/* Full-size chart for selected metric */}
-      {selectedMetric && selectedMetricData.length > 0 && (
-        <Card>
-          <CardHeader
-            title={`${selectedMetricConfig?.title || selectedMetric} History`}
-            icon={<Activity className="h-4 w-4 text-slate-500" />}
-            actions={
-              <button
-                onClick={() => setSelectedMetric(null)}
-                className="text-xs text-slate-500 hover:text-slate-700"
-              >
-                Close
-              </button>
-            }
-          />
-          <CardBody>
-            <div className="h-80 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={selectedMetricData} margin={{ left: 8, right: 16, top: 8, bottom: 8 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                  <XAxis
-                    dataKey="ts"
-                    type="number"
-                    domain={['auto','auto']}
-                    tickFormatter={(ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                    stroke="#64748b"
-                  />
-                  <YAxis stroke="#64748b" />
-                  <Tooltip
-                    labelFormatter={(ts) => new Date(ts as number).toLocaleString()}
-                    contentStyle={{ backgroundColor: 'white', border: '1px solid #e2e8f0', borderRadius: '8px' }}
-                  />
-                  <Legend />
-                  <Line
-                    type="monotone"
-                    dataKey="value"
-                    stroke={selectedMetricConfig?.tone === 'blue' ? '#0ea5e9' : selectedMetricConfig?.tone === 'green' ? '#10b981' : selectedMetricConfig?.tone === 'amber' ? '#f59e0b' : selectedMetricConfig?.tone === 'rose' ? '#ef4444' : selectedMetricConfig?.tone === 'violet' ? '#8b5cf6' : selectedMetricConfig?.tone === 'red' ? '#ef4444' : '#64748b'}
-                    strokeWidth={2}
-                    dot={false}
-                    name={selectedMetricConfig?.title || selectedMetric}
-                    animationDuration={300}
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-          </CardBody>
-        </Card>
-      )}
+      {/* Two-graph layout: Selected metric on left, Wraparound Risk on right */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Left: Selected metric chart */}
+        {selectedMetric && selectedMetricData.length > 0 && (
+          <Card>
+            <CardHeader
+              title={`${selectedMetricConfig?.title || selectedMetric} History`}
+              icon={<Activity className="h-4 w-4 text-slate-500" />}
+            />
+            <CardBody>
+              <div className="h-80 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={selectedMetricData} margin={{ left: 8, right: 16, top: 8, bottom: 8 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                    <XAxis
+                      dataKey="ts"
+                      type="number"
+                      domain={['auto','auto']}
+                      tickFormatter={(ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      stroke="#64748b"
+                    />
+                    <YAxis stroke="#64748b" />
+                    <Tooltip
+                      labelFormatter={(ts) => new Date(ts as number).toLocaleString()}
+                      contentStyle={{ backgroundColor: 'white', border: '1px solid #e2e8f0', borderRadius: '8px' }}
+                    />
+                    <Legend />
+                    <Line
+                      type="monotone"
+                      dataKey="value"
+                      stroke={selectedMetricConfig?.tone === 'blue' ? '#0ea5e9' : selectedMetricConfig?.tone === 'green' ? '#10b981' : selectedMetricConfig?.tone === 'amber' ? '#f59e0b' : selectedMetricConfig?.tone === 'rose' ? '#ef4444' : selectedMetricConfig?.tone === 'violet' ? '#8b5cf6' : selectedMetricConfig?.tone === 'red' ? '#ef4444' : '#64748b'}
+                      strokeWidth={2}
+                      dot={false}
+                      name={selectedMetricConfig?.title || selectedMetric}
+                      animationDuration={300}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </CardBody>
+          </Card>
+        )}
+
+        {/* Right: Wraparound Risk chart */}
+        <WraparoundRiskGraph
+          xidData={series.wraparound_xid_pct}
+          mxidData={series.wraparound_mxid_pct}
+        />
+      </div>
 
       <SqlSnippet sql={SQL_SNIPPETS.overview} />
     </div>
@@ -1549,7 +1652,7 @@ function App() {
   const { data: bloatSamples } = usePollingData<BloatSample[]>(api.bloat, [], 3_600_000);
   const { data: partitions } = usePollingData<PartitionSlice[]>(api.partitions, [], 300_000);
   const { data: unusedIndexes } = usePollingData<UnusedIndexEntry[]>(api.unusedIndexes, [], 300_000);
-  const { data: wraparound } = usePollingData<WraparoundSnapshot>(api.wraparound, { databases: [], relations: [] }, 300_000);
+  const { data: wraparound } = usePollingData<WraparoundSnapshot>(api.wraparound, { databases: [], relations: [], xid_limit: 0, mxid_limit: 0, xid_pct: 0, mxid_pct: 0 }, 300_000);
   const { data: recommendationsData } = usePollingData<RecommendationsResponse>(api.recommendations, { recommendations: [] }, 60_000);
   const { data: forecastsData } = usePollingData<ForecastsResponse>(api.forecasts, { forecasts: [] }, 60_000);
 

@@ -112,11 +112,16 @@ export interface PartitionSlice {
 export interface WraparoundSnapshot {
   databases: WraparoundDatabase[];
   relations: WraparoundRelation[];
+  xid_limit: number;
+  mxid_limit: number;
+  xid_pct: number;
+  mxid_pct: number;
 }
 
 export interface WraparoundDatabase {
   database: string;
   tx_age: number;
+  mxid_age: number;
 }
 
 export interface WraparoundRelation {

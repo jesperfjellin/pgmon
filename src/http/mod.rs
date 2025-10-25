@@ -191,6 +191,8 @@ struct OverviewHistoryResponse {
     latency_p99_ms: Vec<crate::state::TimePoint>,
     connections: Vec<crate::state::TimePoint>,
     blocked_sessions: Vec<crate::state::TimePoint>,
+    wraparound_xid_pct: Vec<crate::state::TimePoint>,
+    wraparound_mxid_pct: Vec<crate::state::TimePoint>,
     window: String,
     downsampled: bool,
     partial: bool, // true when filtered by `since` producing only incremental new points
@@ -305,6 +307,16 @@ async fn get_overview_history(
         max_points,
         &mut downsample_any,
     );
+    let wraparound_xid_pct = ds(
+        effective_filter(&history.wraparound_xid_pct),
+        max_points,
+        &mut downsample_any,
+    );
+    let wraparound_mxid_pct = ds(
+        effective_filter(&history.wraparound_mxid_pct),
+        max_points,
+        &mut downsample_any,
+    );
 
     Ok(Json(OverviewHistoryResponse {
         tps,
@@ -314,6 +326,8 @@ async fn get_overview_history(
         latency_p99_ms,
         connections,
         blocked_sessions,
+        wraparound_xid_pct,
+        wraparound_mxid_pct,
         window: window.to_string(),
         downsampled: downsample_any,
         partial: since_cutoff.is_some(),

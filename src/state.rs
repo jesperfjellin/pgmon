@@ -100,6 +100,8 @@ pub struct MetricHistory {
     pub temp_bytes_per_second: Vec<TimePoint>,
     pub blocked_sessions: Vec<TimePoint>,
     pub connections: Vec<TimePoint>,
+    pub wraparound_xid_pct: Vec<TimePoint>,
+    pub wraparound_mxid_pct: Vec<TimePoint>,
     // Future: add more series as needed (e.g., checkpoints, replication lag, dead tuple ratios)
     // Daily & weekly rollups (populated by future background task):
     pub daily: Vec<DailyMetricSummary>,
@@ -119,6 +121,8 @@ impl MetricHistory {
             temp_bytes_per_second: Vec::with_capacity(max_points),
             blocked_sessions: Vec::with_capacity(max_points),
             connections: Vec::with_capacity(max_points),
+            wraparound_xid_pct: Vec::with_capacity(max_points),
+            wraparound_mxid_pct: Vec::with_capacity(max_points),
             daily: Vec::new(),
             weekly: Vec::new(),
         }
@@ -197,6 +201,22 @@ impl MetricHistory {
             self.max_points,
         );
     }
+    #[allow(dead_code)]
+    pub fn record_wraparound_xid_pct(&mut self, ts: DateTime<Utc>, value: f64) {
+        Self::push(
+            &mut self.wraparound_xid_pct,
+            TimePoint { ts, value },
+            self.max_points,
+        );
+    }
+    #[allow(dead_code)]
+    pub fn record_wraparound_mxid_pct(&mut self, ts: DateTime<Utc>, value: f64) {
+        Self::push(
+            &mut self.wraparound_mxid_pct,
+            TimePoint { ts, value },
+            self.max_points,
+        );
+    }
 
     /// Fetch a series by logical name; used by history API for dynamic selection.
     #[allow(dead_code)]
@@ -211,6 +231,8 @@ impl MetricHistory {
             "temp_bytes_per_second" => Some(&self.temp_bytes_per_second),
             "blocked_sessions" => Some(&self.blocked_sessions),
             "connections" => Some(&self.connections),
+            "wraparound_xid_pct" => Some(&self.wraparound_xid_pct),
+            "wraparound_mxid_pct" => Some(&self.wraparound_mxid_pct),
             _ => None,
         }
     }
@@ -531,12 +553,21 @@ pub struct ReplicaLag {
 pub struct WraparoundSnapshot {
     pub databases: Vec<WraparoundDatabase>,
     pub relations: Vec<WraparoundRelation>,
+    /// autovacuum_freeze_max_age setting
+    pub xid_limit: i64,
+    /// autovacuum_multixact_freeze_max_age setting
+    pub mxid_limit: i64,
+    /// Cluster-wide max XID age percentage (0-100)
+    pub xid_pct: f64,
+    /// Cluster-wide max MXID age percentage (0-100)
+    pub mxid_pct: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WraparoundDatabase {
     pub database: String,
     pub tx_age: i64,
+    pub mxid_age: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]

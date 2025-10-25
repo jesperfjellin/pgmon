@@ -322,9 +322,26 @@ async fn update_replication(ctx: &AppContext) -> Result<()> {
 }
 
 async fn update_wraparound(ctx: &AppContext) -> Result<()> {
+    // Fetch cluster-wide limits first
+    let limits_row = sqlx::query(
+        r#"
+        SELECT
+            current_setting('autovacuum_freeze_max_age')::bigint AS xid_limit,
+            current_setting('autovacuum_multixact_freeze_max_age')::bigint AS mxid_limit
+        "#,
+    )
+    .fetch_one(&ctx.pool)
+    .await?;
+
+    let xid_limit: i64 = limits_row.try_get("xid_limit")?;
+    let mxid_limit: i64 = limits_row.try_get("mxid_limit")?;
+
     let db_rows = sqlx::query(
         r#"
-        SELECT datname, age(datfrozenxid)::bigint AS tx_age
+        SELECT
+            datname,
+            age(datfrozenxid)::bigint AS tx_age,
+            mxid_age(datminmxid)::bigint AS mxid_age
         FROM pg_database
         ORDER BY tx_age DESC
         LIMIT 10
@@ -334,10 +351,22 @@ async fn update_wraparound(ctx: &AppContext) -> Result<()> {
     .await?;
 
     let mut databases = Vec::with_capacity(db_rows.len());
+    let mut max_xid_age: i64 = 0;
+    let mut max_mxid_age: i64 = 0;
+
     for row in db_rows {
         let database: String = row.try_get("datname")?;
         let tx_age: i64 = row.try_get::<i64, _>("tx_age")?;
-        databases.push(WraparoundDatabase { database, tx_age });
+        let mxid_age: i64 = row.try_get::<i64, _>("mxid_age")?;
+
+        max_xid_age = max_xid_age.max(tx_age);
+        max_mxid_age = max_mxid_age.max(mxid_age);
+
+        databases.push(WraparoundDatabase {
+            database,
+            tx_age,
+            mxid_age,
+        });
     }
 
     let rel_rows = sqlx::query(
@@ -362,9 +391,26 @@ async fn update_wraparound(ctx: &AppContext) -> Result<()> {
         relations.push(WraparoundRelation { relation, tx_age });
     }
 
+    // Calculate cluster-wide percentages (0-100)
+    let xid_pct = if xid_limit > 0 {
+        (max_xid_age as f64 / xid_limit as f64) * 100.0
+    } else {
+        0.0
+    };
+
+    let mxid_pct = if mxid_limit > 0 {
+        (max_mxid_age as f64 / mxid_limit as f64) * 100.0
+    } else {
+        0.0
+    };
+
     let snapshot = WraparoundSnapshot {
         databases,
         relations,
+        xid_limit,
+        mxid_limit,
+        xid_pct,
+        mxid_pct,
     };
 
     let filtered_snapshot = if ctx.config.ui.hide_postgres_defaults {
@@ -379,6 +425,18 @@ async fn update_wraparound(ctx: &AppContext) -> Result<()> {
         &filtered_snapshot.relations,
     );
     emit_wraparound_alerts(ctx, &filtered_snapshot).await;
+
+    // Record wraparound percentages in history
+    let ts = Utc::now();
+    let xid_pct = filtered_snapshot.xid_pct;
+    let mxid_pct = filtered_snapshot.mxid_pct;
+    ctx.state
+        .replace_metric_history(|mh| {
+            mh.record_wraparound_xid_pct(ts, xid_pct);
+            mh.record_wraparound_mxid_pct(ts, mxid_pct);
+        })
+        .await;
+
     ctx.state.update_wraparound(filtered_snapshot).await;
     Ok(())
 }
@@ -665,6 +723,10 @@ fn filter_wraparound_snapshot(snapshot: WraparoundSnapshot) -> WraparoundSnapsho
     WraparoundSnapshot {
         databases,
         relations: snapshot.relations,
+        xid_limit: snapshot.xid_limit,
+        mxid_limit: snapshot.mxid_limit,
+        xid_pct: snapshot.xid_pct,
+        mxid_pct: snapshot.mxid_pct,
     }
 }
 
