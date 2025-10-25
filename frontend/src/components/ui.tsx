@@ -81,9 +81,12 @@ interface MetricCardProps {
   series?: { value: number }[]; // expects pre-shaped small series
   onClick?: () => void;
   isActive?: boolean;
+  change?: number; // absolute change from 24h avg
+  changePercent?: number; // percentage change from 24h avg
+  average24h?: number; // 24h average value
 }
 
-export function MetricCard({ title, value, unit, /* icon unused now */ tone = "blue", status, series, onClick, isActive }: MetricCardProps) {
+export function MetricCard({ title, value, unit, /* icon unused now */ tone = "blue", status, series, onClick, isActive, change, changePercent, average24h }: MetricCardProps) {
   const toneColor = {
     blue: "text-sky-600",
     green: "text-emerald-600",
@@ -126,6 +129,15 @@ export function MetricCard({ title, value, unit, /* icon unused now */ tone = "b
               {unit && <span className="text-slate-400 text-sm">{unit}</span>}
               {status && <Badge tone={status === "crit" ? "red" : "yellow"}>{status}</Badge>}
             </div>
+            {changePercent !== undefined && average24h !== undefined && (
+              <div className="text-xs text-slate-500 flex items-center gap-1">
+                <span className={changePercent >= 0 ? "text-emerald-600" : "text-rose-600"}>
+                  {changePercent >= 0 ? "↑" : "↓"} {Math.abs(change || 0).toFixed(1)} ({Math.abs(changePercent).toFixed(0)}%)
+                </span>
+                <span className="text-slate-400">•</span>
+                <span>Avg {average24h.toFixed(1)} last 24h</span>
+              </div>
+            )}
             {series && series.length > 0 && (
               <div className="w-full mt-1 h-10">
                 <ResponsiveContainer width="100%" height="100%">

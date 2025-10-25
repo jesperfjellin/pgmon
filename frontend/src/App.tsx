@@ -611,15 +611,41 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
   const blockedWarn = (currentBlocked ?? 0) > 0 || longestBlocked >= BLOCKED_WARN;
   const blockedCrit = longestBlocked >= BLOCKED_CRIT;
 
+  // Calculate 24h average and change for each metric
+  const calc24hStats = (data: { ts: number; value: number }[], currentValue?: number) => {
+    if (data.length === 0 || currentValue === undefined) {
+      return { average24h: undefined, change: undefined, changePercent: undefined };
+    }
+
+    // Calculate average from all available data (which is already filtered to show full history)
+    // Since we're showing "all" data now, this will be the average of whatever we have
+    // For metrics collected every minute, this is ~25 hours; for hourly metrics, this is ~62 days
+    const sum = data.reduce((acc, p) => acc + p.value, 0);
+    const average24h = sum / data.length;
+
+    const change = currentValue - average24h;
+    const changePercent = average24h !== 0 ? (change / average24h) * 100 : 0;
+
+    return { average24h, change, changePercent };
+  };
+
+  const tpsStats = calc24hStats(series.tps, currentTps);
+  const qpsStats = calc24hStats(series.qps, currentQps);
+  const meanLatencyStats = calc24hStats(series.mean_latency_ms, currentMeanLatency);
+  const p95LatencyStats = calc24hStats(series.latency_p95_ms, currentP95Latency);
+  const p99LatencyStats = calc24hStats(series.latency_p99_ms, currentP99Latency);
+  const connectionsStats = calc24hStats(series.connections, currentConnections);
+  const blockedStats = calc24hStats(series.blocked_sessions, currentBlocked);
+
   // Metric configuration
   const metrics = [
-    { key: 'connections', title: 'Connections', value: currentConnections !== undefined ? `${Math.round(currentConnections)}/${overview.max_connections}` : '–', tone: 'violet' as const, unit: undefined, status: connectionRatio >= CONNECTION_CRIT ? 'crit' as const : connectionRatio >= CONNECTION_WARN ? 'warn' as const : undefined },
-    { key: 'tps', title: 'TPS', value: currentTps !== undefined ? currentTps.toFixed(1) : '–', tone: 'green' as const, unit: undefined, status: undefined },
-    { key: 'qps', title: 'QPS', value: currentQps !== undefined ? currentQps.toFixed(1) : '–', tone: 'blue' as const, unit: undefined, status: undefined },
-    { key: 'mean_latency_ms', title: 'Mean Latency', value: currentMeanLatency !== undefined ? currentMeanLatency.toFixed(1) : '–', tone: 'amber' as const, unit: 'ms', status: undefined },
-    { key: 'latency_p95_ms', title: 'p95 Latency', value: currentP95Latency !== undefined ? currentP95Latency.toFixed(1) : '–', tone: 'rose' as const, unit: 'ms', status: undefined },
-    { key: 'latency_p99_ms', title: 'p99 Latency', value: currentP99Latency !== undefined ? currentP99Latency.toFixed(1) : '–', tone: 'red' as const, unit: 'ms', status: undefined },
-    { key: 'blocked_sessions', title: 'Blocked Sessions', value: currentBlocked !== undefined ? Math.round(currentBlocked) : '–', tone: 'slate' as const, unit: undefined, status: blockedCrit ? 'crit' as const : blockedWarn ? 'warn' as const : undefined },
+    { key: 'connections', title: 'Connections', value: currentConnections !== undefined ? `${Math.round(currentConnections)}/${overview.max_connections}` : '–', tone: 'violet' as const, unit: undefined, status: connectionRatio >= CONNECTION_CRIT ? 'crit' as const : connectionRatio >= CONNECTION_WARN ? 'warn' as const : undefined, ...connectionsStats },
+    { key: 'tps', title: 'TPS', value: currentTps !== undefined ? currentTps.toFixed(1) : '–', tone: 'green' as const, unit: undefined, status: undefined, ...tpsStats },
+    { key: 'qps', title: 'QPS', value: currentQps !== undefined ? currentQps.toFixed(1) : '–', tone: 'blue' as const, unit: undefined, status: undefined, ...qpsStats },
+    { key: 'mean_latency_ms', title: 'Mean Latency', value: currentMeanLatency !== undefined ? currentMeanLatency.toFixed(1) : '–', tone: 'amber' as const, unit: 'ms', status: undefined, ...meanLatencyStats },
+    { key: 'latency_p95_ms', title: 'p95 Latency', value: currentP95Latency !== undefined ? currentP95Latency.toFixed(1) : '–', tone: 'rose' as const, unit: 'ms', status: undefined, ...p95LatencyStats },
+    { key: 'latency_p99_ms', title: 'p99 Latency', value: currentP99Latency !== undefined ? currentP99Latency.toFixed(1) : '–', tone: 'red' as const, unit: 'ms', status: undefined, ...p99LatencyStats },
+    { key: 'blocked_sessions', title: 'Blocked Sessions', value: currentBlocked !== undefined ? Math.round(currentBlocked) : '–', tone: 'slate' as const, unit: undefined, status: blockedCrit ? 'crit' as const : blockedWarn ? 'warn' as const : undefined, ...blockedStats },
   ];
 
   // Get selected metric's data
@@ -641,6 +667,9 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
             series={series[metric.key as keyof typeof series].map(p => ({ value: p.value }))}
             onClick={() => setSelectedMetric(metric.key)}
             isActive={selectedMetric === metric.key}
+            change={metric.change}
+            changePercent={metric.changePercent}
+            average24h={metric.average24h}
           />
         ))}
       </div>
