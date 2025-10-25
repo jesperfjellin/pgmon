@@ -200,7 +200,7 @@ struct OverviewHistoryResponse {
 
 /// Returns high-resolution time series for a metric.
 /// Query params:
-///   ?window=24h | 1h | 6h (default 24h)
+///   ?window=24h | 6h | 1h | all (default 24h)
 ///   ?max_points=1000 (downsample target)
 async fn get_history(
     State(ctx): State<AppContext>,
@@ -219,8 +219,11 @@ async fn get_history(
     };
 
     // Window filter
-    let cutoff = cutoff_for_window(window).ok_or(StatusCode::BAD_REQUEST)?;
-    let filtered: Vec<_> = all_points.into_iter().filter(|p| p.ts >= cutoff).collect();
+    let cutoff = cutoff_for_window(window).map_err(|_| StatusCode::BAD_REQUEST)?;
+    let filtered: Vec<_> = match cutoff {
+        Some(cutoff_time) => all_points.into_iter().filter(|p| p.ts >= cutoff_time).collect(),
+        None => all_points, // No time filtering - return all points
+    };
 
     let (points, downsampled) = maybe_downsample(filtered, max_points);
     Ok(Json(HistoryResponse {
@@ -232,7 +235,7 @@ async fn get_history(
 
 /// Returns multiple KPI series in one call to reduce frontend round trips.
 /// Query params mirror single metric history:
-///   ?window=24h|6h|1h (default 1h for overview density)
+///   ?window=24h|6h|1h|all (default 1h for overview density)
 ///   ?max_points=300 (downsample target shared across all series)
 async fn get_overview_history(
     State(ctx): State<AppContext>,
@@ -249,7 +252,7 @@ async fn get_overview_history(
         .and_then(|v| v.parse::<i64>().ok())
         .and_then(|secs| chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0));
 
-    let cutoff = cutoff_for_window(window).ok_or(StatusCode::BAD_REQUEST)?;
+    let cutoff = cutoff_for_window(window).map_err(|_| StatusCode::BAD_REQUEST)?;
     let history = ctx.state.snapshot_metric_history().await; // single lock clone.
 
     // Build filtered + optional incremental slice.
@@ -264,7 +267,10 @@ async fn get_overview_history(
     };
 
     let effective_filter = |points: &[crate::state::TimePoint]| {
-        let base: Vec<_> = points.iter().filter(|p| p.ts >= cutoff).cloned().collect();
+        let base: Vec<_> = match cutoff {
+            Some(cutoff_time) => points.iter().filter(|p| p.ts >= cutoff_time).cloned().collect(),
+            None => points.to_vec(), // No time filtering - return all points
+        };
         if let Some(since) = since_cutoff {
             base.into_iter().filter(|p| p.ts > since).collect()
         } else {
@@ -334,13 +340,14 @@ async fn get_overview_history(
     }))
 }
 
-fn cutoff_for_window(window: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+fn cutoff_for_window(window: &str) -> Result<Option<chrono::DateTime<chrono::Utc>>, ()> {
     let now = chrono::Utc::now();
     match window {
-        "1h" => Some(now - chrono::Duration::hours(1)),
-        "6h" => Some(now - chrono::Duration::hours(6)),
-        "24h" => Some(now - chrono::Duration::hours(24)),
-        _ => None,
+        "1h" => Ok(Some(now - chrono::Duration::hours(1))),
+        "6h" => Ok(Some(now - chrono::Duration::hours(6))),
+        "24h" => Ok(Some(now - chrono::Duration::hours(24))),
+        "all" => Ok(None), // No time cutoff - return all available data
+        _ => Err(()), // Invalid window
     }
 }
 

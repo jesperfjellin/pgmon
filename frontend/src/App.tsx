@@ -502,7 +502,7 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
     const shape = (pts: any[]) => pts.map(p => ({ ts: p.ts * 1000, value: p.value }));
     const fullLoad = async () => {
       try {
-        const resp = await fetch(`${api.overviewHistory}?window=1h&max_points=300`);
+        const resp = await fetch(`${api.overviewHistory}?window=all&max_points=1500`);
         const json = await resp.json();
         if (stopped) return;
         setSeries({
@@ -540,7 +540,7 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
       }
       try {
         const sinceSeconds = Math.floor(lastTsRef.current / 1000);
-        const resp = await fetch(`${api.overviewHistory}?window=1h&max_points=300&since=${sinceSeconds}`);
+        const resp = await fetch(`${api.overviewHistory}?window=all&max_points=1500&since=${sinceSeconds}`);
         const json = await resp.json();
         if (stopped) return;
         // Partial response may return empty arrays; merge only new points
