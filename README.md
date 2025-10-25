@@ -1,3 +1,13 @@
+<div align="center">
+  <img src="./logo/logo.png" alt="Project Logo" width="300"/>
+</div>
+
+<div align="center">
+
+
+  
+</div>
+
 # PGMon
 
 PostgreSQL monitoring with a web UI and Prometheus metrics export.
