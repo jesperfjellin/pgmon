@@ -297,11 +297,7 @@ fn linear_regression(values: &[f64]) -> (f64, f64) {
     // X values are simply 0, 1, 2, 3, ... (day indices)
     let sum_x: f64 = (0..values.len()).map(|i| i as f64).sum();
     let sum_y: f64 = values.iter().sum();
-    let sum_xy: f64 = values
-        .iter()
-        .enumerate()
-        .map(|(i, &y)| i as f64 * y)
-        .sum();
+    let sum_xy: f64 = values.iter().enumerate().map(|(i, &y)| i as f64 * y).sum();
     let sum_x2: f64 = (0..values.len()).map(|i| (i as f64).powi(2)).sum();
 
     let slope = (n * sum_xy - sum_x * sum_y) / (n * sum_x2 - sum_x.powi(2));

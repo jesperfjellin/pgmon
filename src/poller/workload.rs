@@ -244,10 +244,7 @@ async fn update_top_queries(ctx: &AppContext) -> Result<()> {
         "#
     };
 
-    let rows = sqlx::query(sql)
-    .bind(limit)
-    .fetch_all(&ctx.pool)
-    .await;
+    let rows = sqlx::query(sql).bind(limit).fetch_all(&ctx.pool).await;
 
     match rows {
         Ok(rows) => {
@@ -840,8 +837,9 @@ fn extract_table_names(query: &str) -> Option<String> {
 
     // Separate pattern for UPDATE to ensure it's followed by a table name, not SET
     let update_re = Regex::new(
-        r"(?i)\bUPDATE\s+(?:ONLY\s+)?([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?)\s+SET"
-    ).ok()?;
+        r"(?i)\bUPDATE\s+(?:ONLY\s+)?([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)?)\s+SET",
+    )
+    .ok()?;
 
     let mut tables = Vec::new();
 
@@ -873,6 +871,11 @@ fn extract_table_names(query: &str) -> Option<String> {
     if tables.len() <= 3 {
         Some(tables.join(", "))
     } else {
-        Some(format!("{}, {}... (+{})", tables[0], tables[1], tables.len() - 2))
+        Some(format!(
+            "{}, {}... (+{})",
+            tables[0],
+            tables[1],
+            tables.len() - 2
+        ))
     }
 }

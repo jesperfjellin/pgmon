@@ -1363,6 +1363,9 @@ mod tests {
             reltuples: Some(100.0),
             dead_tuples: Some(12_000),
             estimated_bloat_bytes: Some(100_000),
+            cache_hit_ratio: None,
+            heap_blks_read: None,
+            heap_blks_hit: None,
         };
 
         metrics.set_storage_metrics("cluster", &[entry]);
@@ -1425,6 +1428,10 @@ mod tests {
             total_time_seconds: 12.5,
             mean_time_ms: 297.0,
             shared_blks_read: 900,
+            shared_blks_hit: 1_800,
+            cache_hit_ratio: 0.67,
+            query_text: None,
+            table_names: None,
         };
 
         metrics.set_statement_metrics("cluster", &[entry]);

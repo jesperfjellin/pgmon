@@ -56,7 +56,11 @@ pub fn generate_recommendations(
     recommendations.extend(generate_vacuum_analyze_recommendations(storage, autovac));
 
     // Generate VACUUM FULL recommendations
-    recommendations.extend(generate_vacuum_full_recommendations(bloat, storage, min_reclaim_bytes));
+    recommendations.extend(generate_vacuum_full_recommendations(
+        bloat,
+        storage,
+        min_reclaim_bytes,
+    ));
 
     // Generate ANALYZE recommendations
     recommendations.extend(generate_analyze_recommendations(stale_stats));
@@ -94,12 +98,10 @@ fn generate_vacuum_analyze_recommendations(
             .iter()
             .find(|av| av.relation == entry.relation)
             .and_then(|av| {
-                av.last_autovacuum
-                    .or(av.last_vacuum)
-                    .map(|dt| {
-                        let age = Utc::now().signed_duration_since(dt);
-                        age.num_hours() as f64 + (age.num_minutes() % 60) as f64 / 60.0
-                    })
+                av.last_autovacuum.or(av.last_vacuum).map(|dt| {
+                    let age = Utc::now().signed_duration_since(dt);
+                    age.num_hours() as f64 + (age.num_minutes() % 60) as f64 / 60.0
+                })
             });
 
         // Rule 1: Dead tuple ratio >= 40% OR dead tuples >= 500k = CRITICAL
@@ -305,8 +307,7 @@ fn generate_analyze_recommendations(stale_stats: &[StaleStatEntry]) -> Vec<Recom
 
         let rationale = format!(
             "Table statistics are {:.1} hours old (last analyzed: {}). Running ANALYZE will help the query planner choose better indexes and execution plans.",
-            hours,
-            last_analyze_str
+            hours, last_analyze_str
         );
 
         // ANALYZE is typically fast, estimate based on table size (~1GB/sec scan)
@@ -373,37 +374,36 @@ fn generate_autovacuum_tuning_recommendations(
 
         // Rule 3: "Starving" tables with chronic dead tuple buildup
         // High dead ratio + no recent vacuum = autovacuum not running at all
-        let is_starving = dead_ratio >= 15.0
-            && hours_since_autovac.map(|h| h > 6.0).unwrap_or(true);
+        let is_starving =
+            dead_ratio >= 15.0 && hours_since_autovac.map(|h| h > 6.0).unwrap_or(true);
 
         if !is_high_churn && !is_large_table && !is_starving {
             continue;
         }
 
         // Determine severity and recommendation
-        let (severity, suggested_scale_factor, suggested_threshold) =
-            if is_starving {
-                // CRITICAL: Starving table needs immediate aggressive tuning
-                (
-                    Severity::Crit,
-                    0.05, // Very aggressive (5%)
-                    1000,
-                )
-            } else if is_high_churn {
-                // WARNING: High churn needs more aggressive autovacuum
-                (
-                    Severity::Warn,
-                    0.1, // Moderately aggressive (10%)
-                    500,
-                )
-            } else {
-                // INFO: Large table optimization
-                (
-                    Severity::Info,
-                    0.1, // Keep default scale factor
-                    10000,
-                )
-            };
+        let (severity, suggested_scale_factor, suggested_threshold) = if is_starving {
+            // CRITICAL: Starving table needs immediate aggressive tuning
+            (
+                Severity::Crit,
+                0.05, // Very aggressive (5%)
+                1000,
+            )
+        } else if is_high_churn {
+            // WARNING: High churn needs more aggressive autovacuum
+            (
+                Severity::Warn,
+                0.1, // Moderately aggressive (10%)
+                500,
+            )
+        } else {
+            // INFO: Large table optimization
+            (
+                Severity::Info,
+                0.1, // Keep default scale factor
+                10000,
+            )
+        };
 
         // Build rationale based on the issue detected
         let rationale = if is_starving {

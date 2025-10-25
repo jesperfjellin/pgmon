@@ -144,7 +144,9 @@ async fn get_recommendations(State(ctx): State<AppContext>) -> Json<Recommendati
     Json(RecommendationsResponse { recommendations })
 }
 
-async fn get_forecasts(State(ctx): State<AppContext>) -> Json<crate::forecasting::ForecastsResponse> {
+async fn get_forecasts(
+    State(ctx): State<AppContext>,
+) -> Json<crate::forecasting::ForecastsResponse> {
     let snapshots = ctx.state.get_snapshots().await;
     let history = ctx.state.snapshot_metric_history().await;
 
@@ -221,7 +223,10 @@ async fn get_history(
     // Window filter
     let cutoff = cutoff_for_window(window).map_err(|_| StatusCode::BAD_REQUEST)?;
     let filtered: Vec<_> = match cutoff {
-        Some(cutoff_time) => all_points.into_iter().filter(|p| p.ts >= cutoff_time).collect(),
+        Some(cutoff_time) => all_points
+            .into_iter()
+            .filter(|p| p.ts >= cutoff_time)
+            .collect(),
         None => all_points, // No time filtering - return all points
     };
 
@@ -268,7 +273,11 @@ async fn get_overview_history(
 
     let effective_filter = |points: &[crate::state::TimePoint]| {
         let base: Vec<_> = match cutoff {
-            Some(cutoff_time) => points.iter().filter(|p| p.ts >= cutoff_time).cloned().collect(),
+            Some(cutoff_time) => points
+                .iter()
+                .filter(|p| p.ts >= cutoff_time)
+                .cloned()
+                .collect(),
             None => points.to_vec(), // No time filtering - return all points
         };
         if let Some(since) = since_cutoff {
@@ -347,7 +356,7 @@ fn cutoff_for_window(window: &str) -> Result<Option<chrono::DateTime<chrono::Utc
         "6h" => Ok(Some(now - chrono::Duration::hours(6))),
         "24h" => Ok(Some(now - chrono::Duration::hours(24))),
         "all" => Ok(None), // No time cutoff - return all available data
-        _ => Err(()), // Invalid window
+        _ => Err(()),      // Invalid window
     }
 }
 
