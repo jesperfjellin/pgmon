@@ -6,17 +6,31 @@ use crate::app::AppContext;
 use crate::state::{StorageEntry, UnusedIndexEntry};
 
 const DEEP_SAMPLE_SQL: &str = r#"
+WITH relation_sizes AS (
+    SELECT
+        c.oid,
+        c.oid::regclass::text AS relation,
+        c.relkind::text AS relkind,
+        c.reltuples::double precision AS reltuples,
+        pg_total_relation_size(c.oid) AS total_bytes,
+        pg_relation_size(c.oid) AS table_bytes,
+        pg_indexes_size(c.oid) AS index_bytes
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
+      AND c.relkind IN ('r','m')
+)
 SELECT
-    c.oid::regclass::text AS relation,
-    c.relkind::text AS relkind,
-    pg_total_relation_size(c.oid) AS total_bytes,
-    pg_relation_size(c.oid) AS table_bytes,
-    pg_indexes_size(c.oid) AS index_bytes,
-    GREATEST(pg_total_relation_size(c.oid) - pg_relation_size(c.oid) - pg_indexes_size(c.oid), 0) AS toast_bytes,
+    rs.relation,
+    rs.relkind,
+    rs.total_bytes,
+    rs.table_bytes,
+    rs.index_bytes,
+    GREATEST(rs.total_bytes - rs.table_bytes - rs.index_bytes, 0) AS toast_bytes,
     NULLIF(s.n_live_tup + s.n_dead_tup, 0)::double precision AS tuple_denominator,
     s.n_dead_tup AS dead_tuples,
     s.last_autovacuum,
-    c.reltuples::double precision AS reltuples,
+    rs.reltuples,
     io.heap_blks_read,
     io.heap_blks_hit,
     CASE
@@ -24,13 +38,10 @@ SELECT
         THEN COALESCE(io.heap_blks_hit, 0)::double precision / (COALESCE(io.heap_blks_read, 0) + COALESCE(io.heap_blks_hit, 0))
         ELSE NULL
     END AS cache_hit_ratio
-FROM pg_class c
-JOIN pg_namespace n ON n.oid = c.relnamespace
-LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
-LEFT JOIN pg_statio_user_tables io ON io.relid = c.oid
-WHERE n.nspname NOT IN ('pg_catalog', 'information_schema')
-  AND c.relkind IN ('r','m')
-ORDER BY pg_total_relation_size(c.oid) DESC
+FROM relation_sizes rs
+LEFT JOIN pg_stat_user_tables s ON s.relid = rs.oid
+LEFT JOIN pg_statio_user_tables io ON io.relid = rs.oid
+ORDER BY rs.total_bytes DESC
 LIMIT $1
 "#;
 

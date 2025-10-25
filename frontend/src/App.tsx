@@ -597,15 +597,70 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
   );
 }
 
+type QuerySortKey = 'table_names' | 'calls' | 'total_time_seconds' | 'mean_time_ms' | 'cache_hit_ratio';
+
 function WorkloadTab({ queries }: { queries: TopQueryEntry[] }) {
-  const topQueries = useMemo(() => queries.slice(0, 10), [queries]);
   const [selectedQuery, setSelectedQuery] = useState<TopQueryEntry | null>(null);
+  const [sortKey, setSortKey] = useState<QuerySortKey>('mean_time_ms');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
+
+  const topQueries = useMemo(() => {
+    const sorted = [...queries].sort((a, b) => {
+      let aVal: number | string = 0;
+      let bVal: number | string = 0;
+
+      if (sortKey === 'table_names') {
+        aVal = a.table_names || '';
+        bVal = b.table_names || '';
+      } else {
+        aVal = a[sortKey];
+        bVal = b[sortKey];
+      }
+
+      if (typeof aVal === 'string' && typeof bVal === 'string') {
+        return sortDir === 'asc'
+          ? aVal.localeCompare(bVal)
+          : bVal.localeCompare(aVal);
+      }
+
+      // At this point, both values must be numbers
+      const aNum = aVal as number;
+      const bNum = bVal as number;
+      return sortDir === 'asc' ? aNum - bNum : bNum - aNum;
+    });
+    return sorted.slice(0, 10);
+  }, [queries, sortKey, sortDir]);
+
+  const handleSort = (key: QuerySortKey) => {
+    if (sortKey === key) {
+      setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortKey(key);
+      setSortDir('desc');
+    }
+  };
+
+  const SortHeader = ({ label, sortKey: key }: { label: string; sortKey: QuerySortKey }) => (
+    <th
+      className="py-2 pr-4 cursor-pointer select-none hover:bg-slate-50"
+      onClick={() => handleSort(key)}
+    >
+      <div className="flex items-center gap-1">
+        {label}
+        {sortKey === key && (
+          <span className="text-slate-400">
+            {sortDir === 'asc' ? '↑' : '↓'}
+          </span>
+        )}
+      </div>
+    </th>
+  );
 
   return (
     <div className="space-y-4">
       <Section
         title="Top Queries"
-        subtitle="By total execution time"
+        subtitle="Sorted by mean latency (click headers to sort)"
         icon={<Activity className="h-5 w-5 text-slate-500" />}
       />
 
@@ -615,12 +670,12 @@ function WorkloadTab({ queries }: { queries: TopQueryEntry[] }) {
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="text-left text-slate-500 border-b border-slate-100">
-                  <th className="py-2 pr-4">Table</th>
+                  <SortHeader label="Table" sortKey="table_names" />
                   <th className="py-2 pr-4">Query ID</th>
-                  <th className="py-2 pr-4">Calls</th>
-                  <th className="py-2 pr-4">Total Time (s)</th>
-                  <th className="py-2 pr-4">Mean (ms)</th>
-                  <th className="py-2 pr-4">Cache Hit %</th>
+                  <SortHeader label="Calls" sortKey="calls" />
+                  <SortHeader label="Total Time (s)" sortKey="total_time_seconds" />
+                  <SortHeader label="Mean (ms)" sortKey="mean_time_ms" />
+                  <SortHeader label="Cache Hit %" sortKey="cache_hit_ratio" />
                 </tr>
               </thead>
               <tbody>
