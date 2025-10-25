@@ -1,14 +1,6 @@
-##
-## pgmon agent configuration sample (non-secret)
-## ---------------------------------------------------------------------
-## Copy this file to `config.pgmon.yaml`, adjust the metadata, and keep
-## it under version control. Runtime secrets (DSNs, webhook tokens, etc.)
-## belong in `.env` or your secret manager, not in this file.
-##
-
 # Logical label for this Postgres environment (appears in metrics, logs, UI).
-# Pick something meaningful like "prod-eu-west" or "analytics-cluster".
-cluster: "prod-eu-west-cluster"
+# Pick something meaningful like "prod-eu-west" or "analytics".
+cluster: "prod-eu-west"
 
 sample_intervals:
   # Hot-path loop: sessions, locks, autovacuum progress (default 15s).
