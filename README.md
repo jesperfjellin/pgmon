@@ -25,6 +25,18 @@ PGMon collects performance metrics, detects common issues, and provides recommen
 
 PGMon requires only read-only database access and has no external dependencies.
 
+## Database Setup
+
+Create a read-only monitoring user in PostgreSQL:
+
+```sql
+CREATE USER pgmon_agent WITH PASSWORD 'your_secure_password';
+GRANT pg_monitor TO pgmon_agent;
+GRANT CONNECT ON DATABASE your_database TO pgmon_agent;
+```
+
+The `pg_monitor` role provides read-only access to all monitoring views and statistics tables.
+
 ## Quick Start
 
 ### 1. Configure Environment
@@ -38,7 +50,7 @@ cp .env.sample .env
 Edit `.env` and set your PostgreSQL connection string:
 
 ```bash
-PGMON_DSN=postgres://your_user:your_password@localhost:5432/your_database?sslmode=require
+PGMON_DSN=postgres://pgmon_agent:your_secure_password@localhost:5432/your_database?sslmode=require
 ```
 
 ### 2. Run PGMon
@@ -63,8 +75,13 @@ Edit `config.pgmon.yaml` to adjust:
 ## Requirements
 
 - PostgreSQL with `pg_monitor` role access
-- Optional: `pg_stat_statements` extension for query analysis
-- Optional: `pgstattuple` extension for bloat detection
+
+**Optional Extensions:**
+- `pg_stat_statements` - For query analysis and top queries
+- `pg_stat_monitor` - For p95/p99 latency percentiles
+- `pgstattuple` - For bloat detection
+
+PGMon handles missing extensions by continuing operations with reduced functionality.
 
 See the comments in `config.pgmon.yaml` for all available options.
 
