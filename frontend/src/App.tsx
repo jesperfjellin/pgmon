@@ -1696,14 +1696,12 @@ function App() {
     <div className="min-h-screen bg-slate-50 text-slate-900">
       {/* Top Nav */}
       <div className="border-b border-slate-200 bg-white sticky top-0 z-10">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-rose-500/20 to-amber-400/20 grid place-items-center ring-1 ring-rose-200/40">
-              <div className="h-4 w-4 rounded-md bg-gradient-to-br from-rose-500 to-amber-400" />
-            </div>
+            <img src="/android-chrome-192x192.png" alt="PGMon" className="h-18 w-18 rounded-xl" />
             <div>
-              <div className="text-sm text-slate-500">Monitoring cluster</div>
-              <div className="font-semibold text-slate-900">{overview?.cluster ?? "…"}</div>
+              <div className="text-base text-slate-500">Monitoring cluster</div>
+              <div className="font-semibold text-slate-900 text-lg">{overview?.cluster ?? "…"}</div>
             </div>
           </div>
           {overviewError && (
