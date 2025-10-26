@@ -74,7 +74,7 @@ Edit `config.pgmon.yaml` to adjust:
 
 ## Requirements
 
-- PostgreSQL with `pg_monitor` role access
+- PostgreSQL with `pg_monitor` role access. PGMon is built around Postgres 17. 
 
 **Optional Extensions:**
 - `pg_stat_statements` - For query analysis and top queries
