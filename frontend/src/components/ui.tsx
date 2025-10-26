@@ -96,16 +96,8 @@ export function MetricCard({ title, value, unit, /* icon unused now */ tone = "b
     slate: "text-slate-600",
     red: "text-rose-600",
   }[tone];
-  const strokeMap: Record<string,string> = {
-    blue: '#0ea5e9',
-    green: '#10b981',
-    amber: '#f59e0b',
-    rose: '#ef4444',
-    violet: '#8b5cf6',
-    slate: '#64748b',
-    red: '#ef4444'
-  };
-  const stroke = strokeMap[tone] || '#0ea5e9';
+  // Use consistent blue color for all sparklines
+  const stroke = '#0ea5e9';
 
   // SVG gradient id must be a valid XML ID (no spaces). Use a slugified title.
   const gradientId = `mc-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-spark`;
@@ -129,13 +121,9 @@ export function MetricCard({ title, value, unit, /* icon unused now */ tone = "b
               {unit && <span className="text-slate-400 text-sm">{unit}</span>}
               {status && <Badge tone={status === "crit" ? "red" : "yellow"}>{status}</Badge>}
             </div>
-            {changePercent !== undefined && average24h !== undefined && (
-              <div className="text-xs text-slate-500 flex items-center gap-1">
-                <span className={changePercent >= 0 ? "text-emerald-600" : "text-rose-600"}>
-                  {changePercent >= 0 ? "↑" : "↓"} {Math.abs(change || 0).toFixed(1)} ({Math.abs(changePercent).toFixed(0)}%)
-                </span>
-                <span className="text-slate-400">•</span>
-                <span>Avg {average24h.toFixed(1)} last 24h</span>
+            {average24h !== undefined && (
+              <div className="text-xs text-slate-500">
+                Avg {average24h.toFixed(1)} last 24h
               </div>
             )}
             {series && series.length > 0 && (

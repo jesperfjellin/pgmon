@@ -704,7 +704,7 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
                     <Line
                       type="monotone"
                       dataKey="value"
-                      stroke={selectedMetricConfig?.tone === 'blue' ? '#0ea5e9' : selectedMetricConfig?.tone === 'green' ? '#10b981' : selectedMetricConfig?.tone === 'amber' ? '#f59e0b' : selectedMetricConfig?.tone === 'rose' ? '#ef4444' : selectedMetricConfig?.tone === 'violet' ? '#8b5cf6' : selectedMetricConfig?.tone === 'red' ? '#ef4444' : '#64748b'}
+                      stroke="#0ea5e9"
                       strokeWidth={2}
                       dot={false}
                       name={selectedMetricConfig?.title || selectedMetric}
@@ -1641,7 +1641,7 @@ function HistoryCharts() {
                 <Tooltip labelFormatter={(ts) => new Date(ts as number).toLocaleTimeString()} />
                 <Legend />
                 <Line type="monotone" dataKey="tps" stroke="#0ea5e9" strokeWidth={2} dot={false} name="TPS" />
-                <Line type="monotone" dataKey="qps" stroke="#6366f1" strokeWidth={2} dot={false} name="QPS" />
+                <Line type="monotone" dataKey="qps" stroke="#0ea5e9" strokeWidth={2} dot={false} name="QPS" />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -1698,9 +1698,6 @@ function App() {
               <div className="text-sm text-slate-500">Monitoring cluster</div>
               <div className="font-semibold">{overview?.cluster ?? "…"}</div>
             </div>
-            {overview?.generated_at && (
-              <Badge tone="green">refreshed {formatRelativeTimestamp(overview.generated_at)}</Badge>
-            )}
           </div>
           {overviewError && (
             <div className="text-sm text-rose-600">Error: {overviewError}</div>
