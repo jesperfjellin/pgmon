@@ -434,7 +434,7 @@ function WraparoundRiskGraph({
                   type="stepAfter"
                   dataKey="xidPct"
                   name="XID %"
-                  stroke="#3b82f6"
+                  stroke="#94a3b8"
                   strokeWidth={2}
                   dot={false}
                   connectNulls
@@ -443,8 +443,8 @@ function WraparoundRiskGraph({
                   type="stepAfter"
                   dataKey="mxidPct"
                   name="MXID %"
-                  stroke="#8b5cf6"
-                  strokeWidth={1.5}
+                  stroke="#f97316"
+                  strokeWidth={2}
                   dot={false}
                   connectNulls
                 />
@@ -704,7 +704,7 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
                     <Line
                       type="monotone"
                       dataKey="value"
-                      stroke="#0ea5e9"
+                      stroke="#f97316"
                       strokeWidth={2}
                       dot={false}
                       name={selectedMetricConfig?.title || selectedMetric}
@@ -1635,13 +1635,13 @@ function HistoryCharts() {
           <div className="h-64 w-full">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={points} margin={{ left: 8, right: 16, top: 8, bottom: 8 }}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="ts" type="number" domain={['auto','auto']} tickFormatter={(ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} />
-                <YAxis />
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis dataKey="ts" type="number" domain={['auto','auto']} tickFormatter={(ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} stroke="#64748b" />
+                <YAxis stroke="#64748b" />
                 <Tooltip labelFormatter={(ts) => new Date(ts as number).toLocaleTimeString()} />
                 <Legend />
-                <Line type="monotone" dataKey="tps" stroke="#0ea5e9" strokeWidth={2} dot={false} name="TPS" />
-                <Line type="monotone" dataKey="qps" stroke="#0ea5e9" strokeWidth={2} dot={false} name="QPS" />
+                <Line type="monotone" dataKey="tps" stroke="#f97316" strokeWidth={2} dot={false} name="TPS" />
+                <Line type="monotone" dataKey="qps" stroke="#f97316" strokeWidth={2} dot={false} name="QPS" />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -1686,17 +1686,17 @@ function App() {
   const { data: forecastsData } = usePollingData<ForecastsResponse>(api.forecasts, { forecasts: [] }, 60_000);
 
   return (
-    <div className="min-h-screen bg-gradient-to-b from-slate-50 to-white text-slate-900">
+    <div className="min-h-screen bg-slate-50 text-slate-900">
       {/* Top Nav */}
-      <div className="border-b border-slate-200 bg-white/70 backdrop-blur sticky top-0 z-10">
+      <div className="border-b border-slate-200 bg-white sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="h-9 w-9 rounded-xl bg-sky-500 text-white grid place-items-center shadow-sm">
-              <Database className="h-5 w-5" />
+            <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-rose-500/20 to-amber-400/20 grid place-items-center ring-1 ring-rose-200/40">
+              <div className="h-4 w-4 rounded-md bg-gradient-to-br from-rose-500 to-amber-400" />
             </div>
             <div>
               <div className="text-sm text-slate-500">Monitoring cluster</div>
-              <div className="font-semibold">{overview?.cluster ?? "…"}</div>
+              <div className="font-semibold text-slate-900">{overview?.cluster ?? "…"}</div>
             </div>
           </div>
           {overviewError && (
@@ -1717,8 +1717,8 @@ function App() {
                     key={t.key}
                     onClick={() => setActive(t.key)}
                     className={classNames(
-                      'w-full group flex items-center gap-2 px-3 py-2 rounded-xl text-sm transition-colors',
-                      active === t.key ? 'bg-sky-50 text-sky-700 border border-sky-100 shadow-sm' : 'hover:bg-slate-50 text-slate-700'
+                      'w-full group flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors border-0',
+                      active === t.key ? 'bg-[#fff1f2] text-slate-900' : 'bg-transparent hover:bg-slate-50/50 text-slate-600'
                     )}
                   >
                     {t.icon}

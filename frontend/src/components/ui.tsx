@@ -37,7 +37,7 @@ interface CardProps {
 
 export function Card({ children, className = "" }: CardProps) {
   return (
-    <div className={classNames("bg-white/70 backdrop-blur border border-slate-200 rounded-2xl shadow-sm transition-colors", className)}>
+    <div className={classNames("bg-white border border-slate-200 rounded-2xl shadow-sm", className)}>
       {children}
     </div>
   );
@@ -96,9 +96,6 @@ export function MetricCard({ title, value, unit, /* icon unused now */ tone = "b
     slate: "text-slate-600",
     red: "text-rose-600",
   }[tone];
-  // Use consistent blue color for all sparklines
-  const stroke = '#0ea5e9';
-
   // SVG gradient id must be a valid XML ID (no spaces). Use a slugified title.
   const gradientId = `mc-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-spark`;
 
@@ -132,11 +129,11 @@ export function MetricCard({ title, value, unit, /* icon unused now */ tone = "b
                   <AreaChart data={series} margin={{ left: 0, right: 0, top: 2, bottom: 0 }}>
                     <defs>
                       <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-                        <stop offset="5%" stopColor={stroke} stopOpacity={0.35} />
-                        <stop offset="95%" stopColor={stroke} stopOpacity={0} />
+                        <stop offset="5%" stopColor="#f97316" stopOpacity={0.35} />
+                        <stop offset="95%" stopColor="#f97316" stopOpacity={0} />
                       </linearGradient>
                     </defs>
-                    <Area type="monotone" dataKey="value" stroke={stroke} fill={`url(#${gradientId})`} strokeWidth={2} />
+                    <Area type="monotone" dataKey="value" stroke="#f97316" fill={`url(#${gradientId})`} strokeWidth={2} />
                   </AreaChart>
                 </ResponsiveContainer>
               </div>
