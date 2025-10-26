@@ -360,6 +360,13 @@ function usePollingData<T>(path: string, initial: T, intervalMs?: number) {
 }
 
 // ---------- Tab Definitions ----------
+// Chart color hierarchy: use these colors in order for multi-line charts
+const CHART_COLORS = [
+  '#f97316',  // Line 1: Orange (orange-500)
+  '#ef4444',  // Line 2: Red (red-500)
+  '#f59e0b',  // Line 3: Amber (amber-400)
+] as const;
+
 const tabs = [
   { key: "overview", label: "Overview", icon: <Gauge className="h-4 w-4" /> },
   { key: "workload", label: "Workload", icon: <Activity className="h-4 w-4" /> },
@@ -432,18 +439,18 @@ function WraparoundRiskGraph({
                 {/* Series */}
                 <Line
                   type="stepAfter"
-                  dataKey="xidPct"
-                  name="XID %"
-                  stroke="#94a3b8"
+                  dataKey="mxidPct"
+                  name="MXID %"
+                  stroke={CHART_COLORS[0]}
                   strokeWidth={2}
                   dot={false}
                   connectNulls
                 />
                 <Line
                   type="stepAfter"
-                  dataKey="mxidPct"
-                  name="MXID %"
-                  stroke="#f97316"
+                  dataKey="xidPct"
+                  name="XID %"
+                  stroke={CHART_COLORS[1]}
                   strokeWidth={2}
                   dot={false}
                   connectNulls
@@ -704,7 +711,7 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
                     <Line
                       type="monotone"
                       dataKey="value"
-                      stroke="#f97316"
+                      stroke={CHART_COLORS[0]}
                       strokeWidth={2}
                       dot={false}
                       name={selectedMetricConfig?.title || selectedMetric}
@@ -1640,8 +1647,8 @@ function HistoryCharts() {
                 <YAxis stroke="#64748b" />
                 <Tooltip labelFormatter={(ts) => new Date(ts as number).toLocaleTimeString()} />
                 <Legend />
-                <Line type="monotone" dataKey="tps" stroke="#f97316" strokeWidth={2} dot={false} name="TPS" />
-                <Line type="monotone" dataKey="qps" stroke="#f97316" strokeWidth={2} dot={false} name="QPS" />
+                <Line type="monotone" dataKey="tps" stroke={CHART_COLORS[0]} strokeWidth={2} dot={false} name="TPS" />
+                <Line type="monotone" dataKey="qps" stroke={CHART_COLORS[1]} strokeWidth={2} dot={false} name="QPS" />
               </LineChart>
             </ResponsiveContainer>
           </div>
