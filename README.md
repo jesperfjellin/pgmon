@@ -89,10 +89,6 @@ See the comments in `config.pgmon.yaml` for all available options.
 
 PGMon exports Prometheus metrics at `/metrics` for scraping. Metrics include transaction rates, latency percentiles, connection counts, wraparound age, bloat estimates, and more.
 
-## Roadmap
-
-See [ROADMAP.md](./ROADMAP.md) for planned features and development status.
-
 ## License
 
 MIT License - see [LICENSE](./LICENSE) for details.
