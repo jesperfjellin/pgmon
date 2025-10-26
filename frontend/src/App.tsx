@@ -424,7 +424,7 @@ function WraparoundRiskGraph({
                 <XAxis
                   dataKey="ts"
                   type="number"
-                  domain={['auto','auto']}
+                  domain={['dataMin', 'dataMax']}
                   tickFormatter={(ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                   stroke="#64748b"
                 />
@@ -671,7 +671,7 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
             unit={metric.unit}
             tone={metric.tone}
             status={metric.status}
-            series={series[metric.key as keyof typeof series].map(p => ({ value: p.value }))}
+            series={series[metric.key as keyof typeof series].slice(-10).map(p => ({ value: p.value }))}
             onClick={() => setSelectedMetric(metric.key)}
             isActive={selectedMetric === metric.key}
             change={metric.change}
@@ -698,7 +698,7 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
                     <XAxis
                       dataKey="ts"
                       type="number"
-                      domain={['auto','auto']}
+                      domain={['dataMin', 'dataMax']}
                       tickFormatter={(ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       stroke="#64748b"
                     />
@@ -1643,7 +1643,7 @@ function HistoryCharts() {
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={points} margin={{ left: 8, right: 16, top: 8, bottom: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-                <XAxis dataKey="ts" type="number" domain={['auto','auto']} tickFormatter={(ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} stroke="#64748b" />
+                <XAxis dataKey="ts" type="number" domain={['dataMin', 'dataMax']} tickFormatter={(ts) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} stroke="#64748b" />
                 <YAxis stroke="#64748b" />
                 <Tooltip labelFormatter={(ts) => new Date(ts as number).toLocaleTimeString()} />
                 <Legend />
