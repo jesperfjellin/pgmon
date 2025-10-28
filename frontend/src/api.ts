@@ -25,10 +25,10 @@ export interface AutovacuumEntry {
   relation: string;
   n_live_tup: number;
   n_dead_tup: number;
-  last_vacuum?: number | null;
-  last_autovacuum?: number | null;
-  last_analyze?: number | null;
-  last_autoanalyze?: number | null;
+  last_vacuum?: string | null; // ISO timestamp
+  last_autovacuum?: string | null; // ISO timestamp
+  last_analyze?: string | null; // ISO timestamp
+  last_autoanalyze?: string | null; // ISO timestamp
 }
 
 export interface StorageEntry {
@@ -38,10 +38,12 @@ export interface StorageEntry {
   table_bytes: number;
   index_bytes: number;
   toast_bytes: number;
-  dead_tuple_ratio?: number;
-  last_autovacuum?: number;
-  reltuples?: number;
-  dead_tuples?: number;
+  dead_tuple_ratio?: number | { source: string; parsedValue: number } | null;
+  last_autovacuum?: string | null; // ISO timestamp string
+  last_analyze?: string | null; // ISO timestamp string
+  last_autoanalyze?: string | null; // ISO timestamp string
+  reltuples?: number | { source: string; parsedValue: number } | null;
+  dead_tuples?: number | null;
   estimated_bloat_bytes?: number | null;
   cache_hit_ratio?: number | null;
   heap_blks_read?: number | null;
@@ -81,8 +83,8 @@ export interface TopQueryEntry {
 
 export interface StaleStatEntry {
   relation: string;
-  last_analyze?: number | null;
-  last_autoanalyze?: number | null;
+  last_analyze?: string | null; // ISO timestamp
+  last_autoanalyze?: string | null; // ISO timestamp
   hours_since_analyze?: number | null;
   n_live_tup: number;
 }
