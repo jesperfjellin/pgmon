@@ -35,6 +35,7 @@ import {
   createPoller,
 } from "./api";
 import { Badge, Card, CardHeader, CardBody, MetricCard, Section, SqlSnippet, formatPercentMaybe } from "./components/ui";
+import { DataTable, ColumnDef } from "./components/DataTable";
 import { useRef } from 'react';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend, ComposedChart, ReferenceArea, ReferenceLine } from 'recharts';
 
@@ -731,64 +732,109 @@ function OverviewTab({ overview }: { overview: OverviewSnapshot | null }) {
   );
 }
 
-type QuerySortKey = 'table_names' | 'calls' | 'total_time_seconds' | 'mean_time_ms' | 'cache_hit_ratio';
-
 function WorkloadTab({ queries }: { queries: TopQueryEntry[] }) {
   const [selectedQuery, setSelectedQuery] = useState<TopQueryEntry | null>(null);
-  const [sortKey, setSortKey] = useState<QuerySortKey>('mean_time_ms');
-  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
-  const topQueries = useMemo(() => {
-    const sorted = [...queries].sort((a, b) => {
-      let aVal: number | string = 0;
-      let bVal: number | string = 0;
+  const columns: ColumnDef<TopQueryEntry>[] = [
+    {
+      key: 'table_names',
+      label: 'Table',
+      width: 'w-48',
+      sortable: true,
+      sortValue: (row) => row.table_names || '',
+      render: (row) => (
+        <span className="text-slate-600 truncate block">
+          {row.table_names || <span className="text-slate-400">–</span>}
+        </span>
+      ),
+    },
+    {
+      key: 'queryid',
+      label: 'Query ID',
+      width: 'w-28',
+      render: (row) => {
+        const queryIdStr = String(row.queryid);
+        const truncated = queryIdStr.length > 10 ? queryIdStr.slice(0, 10) + '...' : queryIdStr;
 
-      if (sortKey === 'table_names') {
-        aVal = a.table_names || '';
-        bVal = b.table_names || '';
-      } else {
-        aVal = a[sortKey];
-        bVal = b[sortKey];
-      }
-
-      if (typeof aVal === 'string' && typeof bVal === 'string') {
-        return sortDir === 'asc'
-          ? aVal.localeCompare(bVal)
-          : bVal.localeCompare(aVal);
-      }
-
-      // At this point, both values must be numbers
-      const aNum = aVal as number;
-      const bNum = bVal as number;
-      return sortDir === 'asc' ? aNum - bNum : bNum - aNum;
-    });
-    return sorted.slice(0, 10);
-  }, [queries, sortKey, sortDir]);
-
-  const handleSort = (key: QuerySortKey) => {
-    if (sortKey === key) {
-      setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
-    } else {
-      setSortKey(key);
-      setSortDir('desc');
-    }
-  };
-
-  const SortHeader = ({ label, sortKey: key }: { label: string; sortKey: QuerySortKey }) => (
-    <th
-      className="py-2 pr-4 cursor-pointer select-none hover:bg-slate-50"
-      onClick={() => handleSort(key)}
-    >
-      <div className="flex items-center gap-1">
-        {label}
-        {sortKey === key && (
-          <span className="text-slate-400">
-            {sortDir === 'asc' ? '↑' : '↓'}
+        return (
+          <span className="font-mono text-[12px]">
+            {row.query_text ? (
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setSelectedQuery(row);
+                }}
+                className="text-blue-600 hover:text-blue-700 hover:underline cursor-pointer bg-transparent border-0 p-0 font-mono text-[12px]"
+              >
+                {truncated}
+              </button>
+            ) : (
+              <span className="text-slate-700">{truncated}</span>
+            )}
           </span>
-        )}
-      </div>
-    </th>
-  );
+        );
+      },
+    },
+    {
+      key: 'calls',
+      label: 'Calls',
+      width: 'w-24',
+      sortable: true,
+      align: 'right',
+      sortValue: (row) => row.calls,
+      render: (row) => numberFormatter.format(row.calls),
+    },
+    {
+      key: 'total_time_seconds',
+      label: 'Total Time (s)',
+      width: 'w-28',
+      sortable: true,
+      align: 'right',
+      sortValue: (row) => row.total_time_seconds,
+      render: (row) => row.total_time_seconds.toFixed(2),
+    },
+    {
+      key: 'mean_time_ms',
+      label: 'Mean (ms)',
+      width: 'w-24',
+      sortable: true,
+      align: 'right',
+      sortValue: (row) => row.mean_time_ms,
+      render: (row) => row.mean_time_ms.toFixed(2),
+    },
+    {
+      key: 'cache_hit_ratio',
+      label: 'Query Cache Hit',
+      width: 'flex-1',
+      sortable: true,
+      sortValue: (row) => row.cache_hit_ratio,
+      render: (row) => {
+        const cacheHitPercent = row.cache_hit_ratio * 100;
+        let barColor = "bg-slate-300";
+        if (row.cache_hit_ratio >= 0.99) {
+          barColor = "bg-green-500";
+        } else if (row.cache_hit_ratio >= 0.95) {
+          barColor = "bg-amber-500";
+        } else {
+          barColor = "bg-red-500";
+        }
+
+        return (
+          <div className="flex items-center gap-2">
+            <div className="flex-1 bg-slate-100 rounded h-4 overflow-hidden min-w-[60px]">
+              <div
+                className={`h-full ${barColor}`}
+                style={{ width: `${cacheHitPercent}%` }}
+              />
+            </div>
+            <span className="text-xs font-mono w-12 text-right flex-shrink-0">
+              {cacheHitPercent.toFixed(1)}%
+            </span>
+          </div>
+        );
+      },
+    },
+  ];
 
   return (
     <div className="space-y-4">
@@ -800,69 +846,14 @@ function WorkloadTab({ queries }: { queries: TopQueryEntry[] }) {
 
       <Card>
         <CardBody>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="text-left text-slate-500 border-b border-slate-100">
-                  <SortHeader label="Table" sortKey="table_names" />
-                  <th className="py-2 pr-4">Query ID</th>
-                  <SortHeader label="Calls" sortKey="calls" />
-                  <SortHeader label="Total Time (s)" sortKey="total_time_seconds" />
-                  <SortHeader label="Mean (ms)" sortKey="mean_time_ms" />
-                  <SortHeader label="Query Cache Hit" sortKey="cache_hit_ratio" />
-                </tr>
-              </thead>
-              <tbody>
-                {topQueries.map((q) => {
-                  const cacheHitPercent = (q.cache_hit_ratio * 100);
-                  let barColor = "bg-slate-300";
-                  if (q.cache_hit_ratio >= 0.99) {
-                    barColor = "bg-green-500";
-                  } else if (q.cache_hit_ratio >= 0.95) {
-                    barColor = "bg-amber-500";
-                  } else {
-                    barColor = "bg-red-500";
-                  }
-
-                  return (
-                    <tr key={q.queryid} className="border-b border-slate-50 hover:bg-slate-50/60">
-                      <td className="py-2 pr-4 text-slate-600">
-                        {q.table_names || <span className="text-slate-400">–</span>}
-                      </td>
-                      <td className="py-2 pr-4 font-mono text-[12px]">
-                        {q.query_text ? (
-                          <button
-                            onClick={() => setSelectedQuery(q)}
-                            className="text-blue-600 hover:text-blue-800 hover:underline cursor-pointer"
-                          >
-                            {q.queryid}
-                          </button>
-                        ) : (
-                          <span className="text-slate-700">{q.queryid}</span>
-                        )}
-                      </td>
-                      <td className="py-2 pr-4">{numberFormatter.format(q.calls)}</td>
-                      <td className="py-2 pr-4">{q.total_time_seconds.toFixed(2)}</td>
-                      <td className="py-2 pr-4">{q.mean_time_ms.toFixed(2)}</td>
-                      <td className="py-2 pr-4">
-                        <div className="flex items-center gap-2 min-w-[120px]">
-                          <div className="flex-1 bg-slate-100 rounded h-4 overflow-hidden">
-                            <div
-                              className={`h-full ${barColor}`}
-                              style={{ width: `${cacheHitPercent}%` }}
-                            />
-                          </div>
-                          <span className="text-xs font-mono w-12 text-right">
-                            {cacheHitPercent.toFixed(1)}%
-                          </span>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            data={queries}
+            columns={columns}
+            defaultSortKey="mean_time_ms"
+            defaultSortDir="desc"
+            maxRows={10}
+            rowKey={(row) => row.queryid}
+          />
         </CardBody>
       </Card>
 
