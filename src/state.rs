@@ -459,6 +459,8 @@ pub struct StorageEntry {
     pub toast_bytes: i64,
     pub dead_tuple_ratio: Option<f64>,
     pub last_autovacuum: Option<DateTime<Utc>>,
+    pub last_analyze: Option<DateTime<Utc>>,
+    pub last_autoanalyze: Option<DateTime<Utc>>,
     pub reltuples: Option<f64>,
     pub dead_tuples: Option<i64>,
     pub estimated_bloat_bytes: Option<i64>,
