@@ -1349,6 +1349,8 @@ mod tests {
             toast_bytes: 262_144,
             dead_tuple_ratio: Some(12.5),
             last_autovacuum: None,
+            last_analyze: None,
+            last_autoanalyze: None,
             reltuples: Some(100.0),
             dead_tuples: Some(12_000),
             estimated_bloat_bytes: Some(100_000),
