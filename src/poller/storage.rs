@@ -30,6 +30,8 @@ SELECT
     NULLIF(s.n_live_tup + s.n_dead_tup, 0)::double precision AS tuple_denominator,
     s.n_dead_tup AS dead_tuples,
     s.last_autovacuum,
+    s.last_analyze,
+    s.last_autoanalyze,
     rs.reltuples,
     io.heap_blks_read,
     io.heap_blks_hit,
@@ -101,6 +103,10 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
         let tuple_denominator: Option<f64> = row.try_get("tuple_denominator")?;
         let last_autovacuum: Option<chrono::DateTime<chrono::Utc>> =
             row.try_get("last_autovacuum")?;
+        let last_analyze: Option<chrono::DateTime<chrono::Utc>> =
+            row.try_get("last_analyze")?;
+        let last_autoanalyze: Option<chrono::DateTime<chrono::Utc>> =
+            row.try_get("last_autoanalyze")?;
         let reltuples: Option<f64> = row.try_get("reltuples")?;
         let heap_blks_read: Option<i64> = row.try_get("heap_blks_read")?;
         let heap_blks_hit: Option<i64> = row.try_get("heap_blks_hit")?;
@@ -133,6 +139,8 @@ pub async fn run(ctx: &AppContext) -> Result<()> {
             toast_bytes,
             dead_tuple_ratio: dead_ratio,
             last_autovacuum,
+            last_analyze,
+            last_autoanalyze,
             reltuples,
             dead_tuples: dead_tuples_count,
             estimated_bloat_bytes,
