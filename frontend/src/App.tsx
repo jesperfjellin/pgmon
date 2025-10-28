@@ -78,20 +78,16 @@ function formatSeconds(value?: number | null) {
   return `${(value / 3600).toFixed(1)}h`;
 }
 
-function formatRelativeTimestamp(value?: number | null) {
-  if (value === undefined || value === null) {
+function formatRelativeTimestamp(value?: string | null) {
+  if (!value) {
     return "never";
   }
-  if (value <= 0) {
-    return "never";
-  }
-  const date = new Date(value * 1000);
+
+  const date = new Date(value);
   if (Number.isNaN(date.getTime()) || date.getUTCFullYear() < 2000) {
     return "never";
   }
-  if (Number.isNaN(date.getTime())) {
-    return "never";
-  }
+
   const diffMs = date.getTime() - Date.now();
   const diffMinutes = Math.round(diffMs / (60 * 1000));
   const formatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
@@ -106,21 +102,34 @@ function formatRelativeTimestamp(value?: number | null) {
   return formatter.format(diffDays, "day");
 }
 
+// Helper to extract numeric value from backend's { source, parsedValue } format
+function extractNumericValue(value?: number | { source: string; parsedValue: number } | null): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') return value;
+  return value.parsedValue;
+}
+
 function formatRange(
-  start?: number | null,
-  end?: number | null,
+  start?: number | string | null,
+  end?: number | string | null,
 ): string {
-  const startText =
-    start === undefined || start === null ? null : formatRelativeTimestamp(start);
-  const endText =
-    end === undefined || end === null ? null : formatRelativeTimestamp(end);
-  if (startText && endText) {
+  // Convert epoch numbers to ISO strings for formatRelativeTimestamp
+  const toISOString = (val?: number | string | null): string | null => {
+    if (!val) return null;
+    if (typeof val === 'string') return val;
+    return new Date(val * 1000).toISOString();
+  };
+
+  const startText = formatRelativeTimestamp(toISOString(start));
+  const endText = formatRelativeTimestamp(toISOString(end));
+
+  if (startText !== "never" && endText !== "never") {
     return `${startText} → ${endText}`;
   }
-  if (startText) {
+  if (startText !== "never") {
     return startText;
   }
-  if (endText) {
+  if (endText !== "never") {
     return endText;
   }
   return "–";
@@ -805,32 +814,20 @@ function WorkloadTab({ queries }: { queries: TopQueryEntry[] }) {
     {
       key: 'cache_hit_ratio',
       label: 'Query Cache Hit',
-      width: 'flex-1',
+      width: 'w-32',
       sortable: true,
+      align: 'right',
       sortValue: (row) => row.cache_hit_ratio,
       render: (row) => {
-        const cacheHitPercent = row.cache_hit_ratio * 100;
-        let barColor = "bg-slate-300";
-        if (row.cache_hit_ratio >= 0.99) {
-          barColor = "bg-green-500";
-        } else if (row.cache_hit_ratio >= 0.95) {
-          barColor = "bg-amber-500";
-        } else {
-          barColor = "bg-red-500";
-        }
-
+        const getColor = (ratio: number) => {
+          if (ratio >= 0.99) return "text-green-600 font-semibold";
+          if (ratio >= 0.95) return "text-amber-600 font-semibold";
+          return "text-red-600 font-semibold";
+        };
         return (
-          <div className="flex items-center gap-2">
-            <div className="flex-1 bg-slate-100 rounded h-4 overflow-hidden min-w-[60px]">
-              <div
-                className={`h-full ${barColor}`}
-                style={{ width: `${cacheHitPercent}%` }}
-              />
-            </div>
-            <span className="text-xs font-mono w-12 text-right flex-shrink-0">
-              {cacheHitPercent.toFixed(1)}%
-            </span>
-          </div>
+          <span className={getColor(row.cache_hit_ratio)}>
+            {(row.cache_hit_ratio * 100).toFixed(1)}%
+          </span>
         );
       },
     },
@@ -935,24 +932,21 @@ function StorageAndBloatTab({
   // Merge data from different sources by relation name
   const combinedData = useMemo(() => {
     const bloatMap = new Map(bloatSamples.map(b => [b.relation, b]));
-    const staleMap = new Map(staleStats.map(s => [s.relation, s]));
 
-    return storage.slice(0, 15).map(storageEntry => {
+    return storage.map(storageEntry => {
       const bloat = bloatMap.get(storageEntry.relation);
-      const stale = staleMap.get(storageEntry.relation);
 
       return {
         ...storageEntry,
         bloat_free_percent: bloat?.free_percent,
-        hours_since_analyze: stale?.hours_since_analyze,
       };
     });
-  }, [storage, bloatSamples, staleStats]);
+  }, [storage, bloatSamples]);
 
-  const getStatsAgeColor = (hours?: number | null) => {
-    if (!hours) return "text-slate-400";
-    if (hours < 24) return "text-green-600 font-semibold";
-    if (hours < 72) return "text-amber-600 font-semibold";
+  const getCacheHitColor = (ratio?: number | null) => {
+    if (ratio === null || ratio === undefined) return "text-slate-400";
+    if (ratio >= 0.99) return "text-green-600 font-semibold";
+    if (ratio >= 0.95) return "text-amber-600 font-semibold";
     return "text-red-600 font-semibold";
   };
 
@@ -960,6 +954,108 @@ function StorageAndBloatTab({
     () => bloatSamples.some((s) => s.dead_tuple_count != null),
     [bloatSamples]
   );
+
+  type CombinedStorageEntry = StorageEntry & {
+    bloat_free_percent?: number;
+  };
+
+  const columns: ColumnDef<CombinedStorageEntry>[] = [
+    {
+      key: 'relation',
+      label: 'Relation',
+      width: 'w-64',
+      sortable: true,
+      sortValue: (row) => row.relation,
+      render: (row) => (
+        <span className="font-mono text-[12px] text-slate-700 truncate block">
+          {row.relation}
+        </span>
+      ),
+    },
+    {
+      key: 'total_bytes',
+      label: 'Total Size',
+      width: 'w-28',
+      sortable: true,
+      align: 'right',
+      sortValue: (row) => row.total_bytes,
+      render: (row) => formatBytes(row.total_bytes),
+    },
+    {
+      key: 'dead_tuple_ratio',
+      label: 'Dead Tuples',
+      width: 'w-28',
+      sortable: true,
+      align: 'right',
+      sortValue: (row) => extractNumericValue(row.dead_tuple_ratio) ?? 0,
+      render: (row) => {
+        const ratio = extractNumericValue(row.dead_tuple_ratio);
+        return ratio !== null ? `${(ratio * 100).toFixed(1)}%` : "—";
+      },
+    },
+    {
+      key: 'bloat_free_percent',
+      label: 'Bloat',
+      width: 'w-24',
+      sortable: true,
+      align: 'right',
+      sortValue: (row) => row.bloat_free_percent ?? 0,
+      render: (row) =>
+        row.bloat_free_percent !== undefined && row.bloat_free_percent !== null
+          ? `${row.bloat_free_percent.toFixed(1)}%`
+          : "—",
+    },
+    {
+      key: 'cache_hit_ratio',
+      label: 'Table Cache Hit',
+      width: 'w-32',
+      sortable: true,
+      align: 'right',
+      sortValue: (row) => row.cache_hit_ratio ?? 0,
+      render: (row) => (
+        <span className={getCacheHitColor(row.cache_hit_ratio)}>
+          {row.cache_hit_ratio !== null && row.cache_hit_ratio !== undefined
+            ? `${(row.cache_hit_ratio * 100).toFixed(1)}%`
+            : "—"}
+        </span>
+      ),
+    },
+    {
+      key: 'last_autovacuum',
+      label: 'Last Vacuum',
+      width: 'w-32',
+      sortable: true,
+      sortValue: (row) => row.last_autovacuum ? new Date(row.last_autovacuum).getTime() : 0,
+      render: (row) => formatRelativeTimestamp(row.last_autovacuum),
+    },
+    {
+      key: 'last_analyzed',
+      label: 'Last Analyzed',
+      width: 'w-32',
+      sortable: true,
+      align: 'right',
+      sortValue: (row) => {
+        const analyze = row.last_analyze ? new Date(row.last_analyze).getTime() : 0;
+        const autoanalyze = row.last_autoanalyze ? new Date(row.last_autoanalyze).getTime() : 0;
+        return Math.max(analyze, autoanalyze);
+      },
+      render: (row) => {
+        const analyze = row.last_analyze;
+        const autoanalyze = row.last_autoanalyze;
+        
+        let latest: string | null = null;
+        if (analyze && autoanalyze) {
+          latest = new Date(analyze) > new Date(autoanalyze) ? analyze : autoanalyze;
+        } else if (analyze) {
+          latest = analyze;
+        } else if (autoanalyze) {
+          latest = autoanalyze;
+        }
+        
+        return formatRelativeTimestamp(latest);
+      },
+    },
+  ];
 
   return (
     <div className="space-y-4">
@@ -971,64 +1067,14 @@ function StorageAndBloatTab({
 
       <Card>
         <CardBody>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="text-left text-slate-500 border-b border-slate-100">
-                  <th className="py-2 pr-4">Relation</th>
-                  <th className="py-2 pr-4">Total Size</th>
-                  <th className="py-2 pr-4">Dead Tuples</th>
-                  <th className="py-2 pr-4">Bloat</th>
-                  <th className="py-2 pr-4">Table Cache Hit</th>
-                  <th className="py-2 pr-4">Last Vacuum</th>
-                  <th className="py-2 pr-4">Stats Age</th>
-                </tr>
-              </thead>
-              <tbody>
-                {combinedData.map((row) => {
-                  const cacheHitRatio = row.cache_hit_ratio;
-                  let cacheColorClass = "text-slate-400";
-                  if (cacheHitRatio !== null && cacheHitRatio !== undefined) {
-                    if (cacheHitRatio >= 0.99) {
-                      cacheColorClass = "text-green-600 font-semibold";
-                    } else if (cacheHitRatio >= 0.95) {
-                      cacheColorClass = "text-amber-600 font-semibold";
-                    } else {
-                      cacheColorClass = "text-red-600 font-semibold";
-                    }
-                  }
-
-                  return (
-                    <tr key={row.relation} className="border-b border-slate-50 hover:bg-slate-50/60">
-                      <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{row.relation}</td>
-                      <td className="py-2 pr-4">{formatBytes(row.total_bytes)}</td>
-                      <td className="py-2 pr-4">
-                        {row.dead_tuple_ratio !== undefined && row.dead_tuple_ratio !== null
-                          ? `${(row.dead_tuple_ratio * 100).toFixed(1)}%`
-                          : "—"}
-                      </td>
-                      <td className="py-2 pr-4">
-                        {row.bloat_free_percent !== undefined && row.bloat_free_percent !== null
-                          ? `${row.bloat_free_percent.toFixed(1)}%`
-                          : "—"}
-                      </td>
-                      <td className={`py-2 pr-4 ${cacheColorClass}`}>
-                        {cacheHitRatio !== null && cacheHitRatio !== undefined
-                          ? `${(cacheHitRatio * 100).toFixed(1)}%`
-                          : "—"}
-                      </td>
-                      <td className="py-2 pr-4">
-                        {formatRelativeTimestamp(row.last_autovacuum ?? undefined)}
-                      </td>
-                      <td className={`py-2 pr-4 ${getStatsAgeColor(row.hours_since_analyze)}`}>
-                        {row.hours_since_analyze ? formatHours(row.hours_since_analyze) : "—"}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
+          <DataTable
+            data={combinedData}
+            columns={columns}
+            defaultSortKey="total_bytes"
+            defaultSortDir="desc"
+            maxRows={15}
+            rowKey={(row) => row.relation}
+          />
         </CardBody>
       </Card>
 
@@ -1129,7 +1175,7 @@ function PartitionsTab({ slices }: { slices: PartitionSlice[] }) {
                   <tr key={slice.parent} className="border-b border-slate-50 hover:bg-slate-50/60">
                     <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{slice.parent}</td>
                     <td className="py-2 pr-4">{numberFormatter.format(slice.child_count)}</td>
-                    <td className="py-2 pr-4">{formatRelativeTimestamp(slice.latest_partition_upper)}</td>
+                    <td className="py-2 pr-4">{formatRelativeTimestamp(slice.latest_partition_upper ? new Date(slice.latest_partition_upper * 1000).toISOString() : null)}</td>
                     <td className="py-2 pr-4">{formatSeconds(slice.cadence_seconds)}</td>
                     <td className="py-2 pr-4">{formatRange(slice.suggested_next_start, slice.suggested_next_end)}</td>
                     <td className="py-2 pr-4">{formatSeconds(slice.future_gap_seconds)}</td>
