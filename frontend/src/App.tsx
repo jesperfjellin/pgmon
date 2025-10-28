@@ -370,14 +370,9 @@ const CHART_COLORS = [
 const tabs = [
   { key: "overview", label: "Overview", icon: <Gauge className="h-4 w-4" /> },
   { key: "workload", label: "Workload", icon: <Activity className="h-4 w-4" /> },
-  { key: "autovac", label: "Autovac", icon: <Zap className="h-4 w-4" /> },
-  { key: "storage", label: "Storage", icon: <Layers className="h-4 w-4" /> },
-  { key: "bloat", label: "Bloat", icon: <BarChart2 className="h-4 w-4" /> },
+  { key: "storage", label: "Storage & Bloat", icon: <Layers className="h-4 w-4" /> },
   { key: "recommendations", label: "Recommendations", icon: <Zap className="h-4 w-4" /> },
-  { key: "forecasts", label: "Forecasts", icon: <TrendingUp className="h-4 w-4" /> },
   { key: "history", label: "History", icon: <Activity className="h-4 w-4" /> },
-  { key: "stale-stats", label: "Stale Stats", icon: <Clock4 className="h-4 w-4" /> },
-  { key: "indexes", label: "Indexes", icon: <Layers className="h-4 w-4" /> },
   { key: "partitions", label: "Partitions", icon: <BarChart2 className="h-4 w-4" /> },
   { key: "replication", label: "Replication", icon: <Server className="h-4 w-4" /> },
   { key: "alerts", label: "Alerts", icon: <AlertTriangle className="h-4 w-4" /> },
@@ -814,7 +809,7 @@ function WorkloadTab({ queries }: { queries: TopQueryEntry[] }) {
                   <SortHeader label="Calls" sortKey="calls" />
                   <SortHeader label="Total Time (s)" sortKey="total_time_seconds" />
                   <SortHeader label="Mean (ms)" sortKey="mean_time_ms" />
-                  <SortHeader label="Cache Hit %" sortKey="cache_hit_ratio" />
+                  <SortHeader label="Query Cache Hit" sortKey="cache_hit_ratio" />
                 </tr>
               </thead>
               <tbody>
@@ -932,60 +927,54 @@ function WorkloadTab({ queries }: { queries: TopQueryEntry[] }) {
   );
 }
 
-function AutovacTab({ tables }: { tables: AutovacuumEntry[] }) {
-  const topTables = useMemo(() => tables.slice(0, 8), [tables]);
+// Combined Storage & Bloat Tab (consolidates Storage, Bloat, Autovac, Stale Stats, and Unused Indexes)
+function StorageAndBloatTab({
+  storage,
+  bloatSamples,
+  unusedIndexes,
+  staleStats,
+}: {
+  storage: StorageEntry[];
+  bloatSamples: BloatSample[];
+  unusedIndexes: UnusedIndexEntry[];
+  staleStats: StaleStatEntry[];
+}) {
+  const [showUnusedIndexes, setShowUnusedIndexes] = useState(false);
 
-  return (
-    <div className="space-y-4">
-      <Section
-        title="Autovacuum Health"
-        subtitle="Dead tuples, freshness, and recent activity"
-        icon={<Zap className="h-5 w-5 text-slate-500" />}
-      />
-      <Card>
-        <CardBody>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="text-left text-slate-500 border-b border-slate-100">
-                  <th className="py-2 pr-4">Relation</th>
-                  <th className="py-2 pr-4">Dead Tuples</th>
-                  <th className="py-2 pr-4">% Dead</th>
-                  <th className="py-2 pr-4">Last Vacuum</th>
-                  <th className="py-2 pr-4">Last Analyze</th>
-                </tr>
-              </thead>
-              <tbody>
-                {topTables.map((row) => {
-                  const total = row.n_live_tup + row.n_dead_tup;
-                  const pctDead = total > 0 ? (row.n_dead_tup / total) * 100 : undefined;
-                  return (
-                    <tr key={row.relation} className="border-b border-slate-50 hover:bg-slate-50/60">
-                      <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{row.relation}</td>
-                      <td className="py-2 pr-4">{numberFormatter.format(row.n_dead_tup)}</td>
-                      <td className="py-2 pr-4">{pctDead !== undefined ? `${pctDead.toFixed(1)}%` : "—"}</td>
-                      <td className="py-2 pr-4">{formatRelativeTimestamp(row.last_autovacuum ?? undefined)}</td>
-                      <td className="py-2 pr-4">{formatRelativeTimestamp(row.last_autoanalyze ?? undefined)}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        </CardBody>
-      </Card>
-      <SqlSnippet sql={SQL_SNIPPETS.autovacuum} />
-    </div>
+  // Merge data from different sources by relation name
+  const combinedData = useMemo(() => {
+    const bloatMap = new Map(bloatSamples.map(b => [b.relation, b]));
+    const staleMap = new Map(staleStats.map(s => [s.relation, s]));
+
+    return storage.slice(0, 15).map(storageEntry => {
+      const bloat = bloatMap.get(storageEntry.relation);
+      const stale = staleMap.get(storageEntry.relation);
+
+      return {
+        ...storageEntry,
+        bloat_free_percent: bloat?.free_percent,
+        hours_since_analyze: stale?.hours_since_analyze,
+      };
+    });
+  }, [storage, bloatSamples, staleStats]);
+
+  const getStatsAgeColor = (hours?: number | null) => {
+    if (!hours) return "text-slate-400";
+    if (hours < 24) return "text-green-600 font-semibold";
+    if (hours < 72) return "text-amber-600 font-semibold";
+    return "text-red-600 font-semibold";
+  };
+
+  const hasAdvancedBloatFields = useMemo(
+    () => bloatSamples.some((s) => s.dead_tuple_count != null),
+    [bloatSamples]
   );
-}
 
-function StorageTab({ rows }: { rows: StorageEntry[] }) {
-  const topRows = useMemo(() => rows.slice(0, 8), [rows]);
   return (
     <div className="space-y-4">
       <Section
-        title="Largest Relations"
-        subtitle="Heap + index + TOAST split"
+        title="Storage & Bloat"
+        subtitle={hasAdvancedBloatFields ? "Combined table health (Exact bloat mode)" : "Combined table health (Approx bloat mode)"}
         icon={<Layers className="h-5 w-5 text-slate-500" />}
       />
 
@@ -997,16 +986,15 @@ function StorageTab({ rows }: { rows: StorageEntry[] }) {
                 <tr className="text-left text-slate-500 border-b border-slate-100">
                   <th className="py-2 pr-4">Relation</th>
                   <th className="py-2 pr-4">Total Size</th>
-                  <th className="py-2 pr-4">Heap</th>
-                  <th className="py-2 pr-4">Indexes</th>
-                  <th className="py-2 pr-4">TOAST</th>
-                  <th className="py-2 pr-4">Cache Hit %</th>
-                  <th className="py-2 pr-4">% Dead</th>
-                  <th className="py-2 pr-4">Est. Bloat</th>
+                  <th className="py-2 pr-4">Dead Tuples</th>
+                  <th className="py-2 pr-4">Bloat</th>
+                  <th className="py-2 pr-4">Table Cache Hit</th>
+                  <th className="py-2 pr-4">Last Vacuum</th>
+                  <th className="py-2 pr-4">Stats Age</th>
                 </tr>
               </thead>
               <tbody>
-                {topRows.map((row) => {
+                {combinedData.map((row) => {
                   const cacheHitRatio = row.cache_hit_ratio;
                   let cacheColorClass = "text-slate-400";
                   if (cacheHitRatio !== null && cacheHitRatio !== undefined) {
@@ -1023,21 +1011,26 @@ function StorageTab({ rows }: { rows: StorageEntry[] }) {
                     <tr key={row.relation} className="border-b border-slate-50 hover:bg-slate-50/60">
                       <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{row.relation}</td>
                       <td className="py-2 pr-4">{formatBytes(row.total_bytes)}</td>
-                      <td className="py-2 pr-4">{formatBytes(row.table_bytes)}</td>
-                      <td className="py-2 pr-4">{formatBytes(row.index_bytes)}</td>
-                      <td className="py-2 pr-4">{formatBytes(row.toast_bytes)}</td>
+                      <td className="py-2 pr-4">
+                        {row.dead_tuple_ratio !== undefined && row.dead_tuple_ratio !== null
+                          ? `${(row.dead_tuple_ratio * 100).toFixed(1)}%`
+                          : "—"}
+                      </td>
+                      <td className="py-2 pr-4">
+                        {row.bloat_free_percent !== undefined && row.bloat_free_percent !== null
+                          ? `${row.bloat_free_percent.toFixed(1)}%`
+                          : "—"}
+                      </td>
                       <td className={`py-2 pr-4 ${cacheColorClass}`}>
                         {cacheHitRatio !== null && cacheHitRatio !== undefined
                           ? `${(cacheHitRatio * 100).toFixed(1)}%`
                           : "—"}
                       </td>
                       <td className="py-2 pr-4">
-                        {formatPercentMaybe(row.dead_tuple_ratio)}
+                        {formatRelativeTimestamp(row.last_autovacuum ?? undefined)}
                       </td>
-                      <td className="py-2 pr-4">
-                        {row.estimated_bloat_bytes !== undefined && row.estimated_bloat_bytes !== null
-                          ? formatBytes(row.estimated_bloat_bytes)
-                          : "—"}
+                      <td className={`py-2 pr-4 ${getStatsAgeColor(row.hours_since_analyze)}`}>
+                        {row.hours_since_analyze ? formatHours(row.hours_since_analyze) : "—"}
                       </td>
                     </tr>
                   );
@@ -1048,140 +1041,48 @@ function StorageTab({ rows }: { rows: StorageEntry[] }) {
         </CardBody>
       </Card>
 
-      <SqlSnippet sql={SQL_SNIPPETS.storage} />
-    </div>
-  );
-}
-
-function BloatTab({ samples }: { samples: BloatSample[] }) {
-  // Move hooks before early return to comply with Rules of Hooks
-  const topSamples = useMemo(() => samples.slice(0, 20), [samples]);
-  const hasAdvancedFields = useMemo(
-    () => topSamples.some((s) => s.dead_tuple_count != null),
-    [topSamples]
-  );
-
-  if (samples.length === 0) {
-    return (
-      <div className="space-y-4">
-        <Section title="Bloat Samples" icon={<BarChart2 className="h-5 w-5 text-slate-500" />} />
+      {/* Unused Indexes Section */}
+      {unusedIndexes.length > 0 && (
         <Card>
           <CardBody>
-            <p className="text-sm text-slate-500">
-              No bloat data available. Ensure <code className="bg-slate-100 px-1 rounded">pgstattuple</code> extension is installed.
-            </p>
+            <button
+              onClick={() => setShowUnusedIndexes(!showUnusedIndexes)}
+              className="w-full flex items-center justify-between py-2 text-left hover:bg-slate-50/60 rounded transition-colors"
+            >
+              <div className="flex items-center gap-2">
+                <Layers className="h-4 w-4 text-slate-500" />
+                <span className="font-semibold text-slate-700">Unused Indexes ({unusedIndexes.length})</span>
+              </div>
+              <span className="text-slate-400">{showUnusedIndexes ? "▼" : "►"}</span>
+            </button>
+
+            {showUnusedIndexes && (
+              <div className="mt-4 overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-slate-500 border-b border-slate-100">
+                      <th className="py-2 pr-4">Relation</th>
+                      <th className="py-2 pr-4">Index</th>
+                      <th className="py-2 pr-4">Size</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {unusedIndexes.map((ix) => (
+                      <tr key={ix.relation + ix.index} className="border-b border-slate-50 hover:bg-slate-50/60">
+                        <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{ix.relation}</td>
+                        <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{ix.index}</td>
+                        <td className="py-2 pr-4">{formatBytes(ix.bytes)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </CardBody>
         </Card>
-        <SqlSnippet sql={SQL_SNIPPETS.bloat} />
-      </div>
-    );
-  }
+      )}
 
-  return (
-    <div className="space-y-4">
-      <Section
-        title="Bloat Deep"
-        subtitle={hasAdvancedFields ? "Exact mode" : "Approx mode"}
-        icon={<BarChart2 className="h-5 w-5 text-slate-500" />}
-      />
-      <Card>
-        <CardBody>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="text-left text-slate-500 border-b border-slate-100">
-                  <th className="py-2 pr-4">Relation</th>
-                  <th className="py-2 pr-4">Table Bytes</th>
-                  <th className="py-2 pr-4">Free Bytes</th>
-                  <th className="py-2 pr-4">Free %</th>
-                  {hasAdvancedFields && (
-                    <>
-                      <th className="py-2 pr-4">Dead Tuples</th>
-                      <th className="py-2 pr-4">Dead %</th>
-                      <th className="py-2 pr-4">Live Tuples</th>
-                      <th className="py-2 pr-4">Tuple Density %</th>
-                    </>
-                  )}
-                </tr>
-              </thead>
-              <tbody>
-                {topSamples.map((sample) => (
-                  <tr key={sample.relation} className="border-b border-slate-50 hover:bg-slate-50/60">
-                    <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{sample.relation}</td>
-                    <td className="py-2 pr-4">{formatBytes(sample.table_bytes)}</td>
-                    <td className="py-2 pr-4">{formatBytes(sample.free_bytes)}</td>
-                    <td className="py-2 pr-4">{sample.free_percent.toFixed(1)}%</td>
-                    {hasAdvancedFields && (
-                      <>
-                        <td className="py-2 pr-4">
-                          {sample.dead_tuple_count != null ? sample.dead_tuple_count.toLocaleString() : "—"}
-                        </td>
-                        <td className="py-2 pr-4">
-                          {sample.dead_tuple_percent != null ? sample.dead_tuple_percent.toFixed(1) + "%" : "—"}
-                        </td>
-                        <td className="py-2 pr-4">
-                          {sample.live_tuple_count != null ? sample.live_tuple_count.toLocaleString() : "—"}
-                        </td>
-                        <td className="py-2 pr-4">
-                          {sample.tuple_density != null ? sample.tuple_density.toFixed(1) + "%" : "—"}
-                        </td>
-                      </>
-                    )}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </CardBody>
-      </Card>
-      <SqlSnippet sql={SQL_SNIPPETS.bloat} />
-    </div>
-  );
-}
-
-function StaleStatsTab({ rows }: { rows: StaleStatEntry[] }) {
-  const topRows = useMemo(() => rows.slice(0, 12), [rows]);
-
-  return (
-    <div className="space-y-4">
-      <Section
-        title="Stale Statistics"
-        subtitle="Tables needing analyze"
-        icon={<Clock4 className="h-5 w-5 text-slate-500" />}
-      />
-      <Card>
-        <CardBody>
-          {topRows.length === 0 ? (
-            <div className="text-sm text-slate-500">No tables exceed the stale-stat thresholds.</div>
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="min-w-full text-sm">
-                <thead>
-                  <tr className="text-left text-slate-500 border-b border-slate-100">
-                    <th className="py-2 pr-4">Relation</th>
-                    <th className="py-2 pr-4">Hours Since Analyze</th>
-                    <th className="py-2 pr-4">Last Analyze</th>
-                    <th className="py-2 pr-4">Last Autoanalyze</th>
-                    <th className="py-2 pr-4">Live Tuples</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topRows.map((row) => (
-                    <tr key={row.relation} className="border-b border-slate-50 hover:bg-slate-50/60">
-                      <td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{row.relation}</td>
-                      <td className="py-2 pr-4">{formatHours(row.hours_since_analyze)}</td>
-                      <td className="py-2 pr-4">{formatRelativeTimestamp(row.last_analyze ?? undefined)}</td>
-                      <td className="py-2 pr-4">{formatRelativeTimestamp(row.last_autoanalyze ?? undefined)}</td>
-                      <td className="py-2 pr-4">{numberFormatter.format(row.n_live_tup)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </CardBody>
-      </Card>
-      <SqlSnippet sql={SQL_SNIPPETS.staleStats} />
+      <SqlSnippet sql={SQL_SNIPPETS.storage} />
     </div>
   );
 }
@@ -1331,7 +1232,14 @@ function AlertsTab({ overview }: { overview: OverviewSnapshot | null }) {
   );
 }
 
-function RecommendationsTab({ recommendations }: { recommendations: Recommendation[] }) {
+// Combined Recommendations Tab (includes both Recommendations and Forecasts)
+function RecommendationsTab({
+  recommendations,
+  forecasts
+}: {
+  recommendations: Recommendation[];
+  forecasts: Forecast[];
+}) {
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
   const [dismissed, setDismissed] = useState<Set<string>>(new Set());
 
@@ -1355,12 +1263,12 @@ function RecommendationsTab({ recommendations }: { recommendations: Recommendati
   };
 
   const getSeverityColor = (severity: string) => {
-    if (severity === "crit") return "red";
+    if (severity === "crit" || severity === "urgent") return "red";
     if (severity === "warn") return "yellow";
     return "blue";
   };
 
-  const getKindLabel = (kind: string) => {
+  const getRecKindLabel = (kind: string) => {
     if (kind === "vacuum_analyze") return "VACUUM ANALYZE";
     if (kind === "vacuum_full") return "VACUUM FULL";
     if (kind === "analyze") return "ANALYZE";
@@ -1369,100 +1277,7 @@ function RecommendationsTab({ recommendations }: { recommendations: Recommendati
     return kind;
   };
 
-  // Filter out dismissed recommendations
-  const visibleRecommendations = recommendations.filter(
-    rec => !dismissed.has(getRecommendationKey(rec))
-  );
-
-  return (
-    <div className="space-y-4">
-      <Section
-        title="Recommendations"
-        subtitle={visibleRecommendations.length === 0 ? "All healthy!" : `${visibleRecommendations.length} maintenance suggestions`}
-        icon={<Zap className="h-5 w-5 text-amber-500" />}
-      />
-
-      {visibleRecommendations.length === 0 ? (
-        <Card>
-          <CardBody>
-            <div className="text-center py-8">
-              <div className="text-4xl mb-2">✨</div>
-              <div className="text-lg font-semibold text-slate-700">No recommendations</div>
-              <div className="text-sm text-slate-500 mt-1">All tables are healthy!</div>
-            </div>
-          </CardBody>
-        </Card>
-      ) : (
-        <div className="space-y-3">
-          {visibleRecommendations.map((rec, index) => (
-            <Card key={`${rec.relation}-${rec.kind}-${index}`}>
-              <CardBody>
-                <div className="space-y-3">
-                  {/* Header */}
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex items-center gap-2">
-                      <Badge tone={getSeverityColor(rec.severity)}>{rec.severity}</Badge>
-                      <Badge tone="slate">{getKindLabel(rec.kind)}</Badge>
-                      <span className="font-mono text-sm text-slate-700">{rec.relation}</span>
-                    </div>
-                    <button
-                      onClick={() => handleDismiss(rec)}
-                      className="flex-shrink-0 p-1 hover:bg-slate-100 rounded transition-colors group"
-                      title="Dismiss (will reappear on next refresh if still valid)"
-                    >
-                      <X className="h-4 w-4 text-slate-400 group-hover:text-slate-600" />
-                    </button>
-                  </div>
-
-                  {/* Rationale */}
-                  <div className="text-sm text-slate-600 leading-relaxed">
-                    {rec.rationale}
-                  </div>
-
-                  {/* Impact details */}
-                  <div className="flex items-center gap-4 text-xs text-slate-500">
-                    {rec.impact.estimated_duration_seconds && (
-                      <span>~{rec.impact.estimated_duration_seconds}s duration</span>
-                    )}
-                    {rec.impact.locks_table && (
-                      <span className="text-amber-600 font-semibold">⚠️ Locks table</span>
-                    )}
-                    {rec.impact.reclaim_bytes && (
-                      <span>Reclaim: {formatBytes(rec.impact.reclaim_bytes)}</span>
-                    )}
-                  </div>
-
-                  {/* SQL Command */}
-                  <div className="relative">
-                    <pre className="bg-slate-800 text-slate-100 p-3 rounded text-sm font-mono overflow-x-auto">
-                      {rec.sql_command}
-                    </pre>
-                    <button
-                      onClick={() => handleCopy(rec.sql_command, index)}
-                      className="absolute top-2 right-2 px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 text-slate-100 rounded transition-colors"
-                    >
-                      {copiedIndex === index ? "Copied!" : "Copy SQL"}
-                    </button>
-                  </div>
-                </div>
-              </CardBody>
-            </Card>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ForecastsTab({ forecasts }: { forecasts: Forecast[] }) {
-  const getSeverityColor = (severity: string) => {
-    if (severity === "urgent") return "red";
-    if (severity === "crit") return "red";
-    if (severity === "warn") return "yellow";
-    return "blue";
-  };
-
-  const getKindLabel = (kind: string) => {
+  const getForecastKindLabel = (kind: string) => {
     if (kind === "wraparound_database") return "WRAPAROUND (DB)";
     if (kind === "wraparound_relation") return "WRAPAROUND (TABLE)";
     if (kind === "table_growth") return "TABLE GROWTH";
@@ -1479,81 +1294,167 @@ function ForecastsTab({ forecasts }: { forecasts: Forecast[] }) {
     });
   };
 
+  // Filter out dismissed recommendations
+  const visibleRecommendations = recommendations.filter(
+    rec => !dismissed.has(getRecommendationKey(rec))
+  );
+
   return (
-    <div className="space-y-4">
-      <Section
-        title="Capacity Forecasts"
-        subtitle={forecasts.length === 0 ? "All healthy!" : `${forecasts.length} capacity warnings`}
-        icon={<TrendingUp className="h-5 w-5 text-blue-500" />}
-      />
+    <div className="space-y-6">
+      {/* Immediate Actions Section */}
+      <div className="space-y-4">
+        <Section
+          title="Immediate Actions"
+          subtitle={visibleRecommendations.length === 0 ? "All healthy!" : `${visibleRecommendations.length} maintenance suggestions`}
+          icon={<Zap className="h-5 w-5 text-amber-500" />}
+        />
 
-      {forecasts.length === 0 ? (
-        <Card>
-          <CardBody>
-            <div className="text-center py-8">
-              <div className="text-4xl mb-2">✨</div>
-              <div className="text-lg font-semibold text-slate-700">No capacity issues forecast</div>
-              <div className="text-sm text-slate-500 mt-1">All resources are trending healthy!</div>
-            </div>
-          </CardBody>
-        </Card>
-      ) : (
-        <div className="space-y-3">
-          {forecasts.map((forecast, index) => (
-            <Card key={`${forecast.resource}-${forecast.kind}-${index}`}>
-              <CardBody>
-                <div className="space-y-3">
-                  {/* Header */}
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex items-center gap-2">
-                      <Badge tone={getSeverityColor(forecast.severity)}>{forecast.severity.toUpperCase()}</Badge>
-                      <Badge tone="slate">{getKindLabel(forecast.kind)}</Badge>
-                      <span className="font-mono text-sm text-slate-700">{forecast.resource}</span>
+        {visibleRecommendations.length === 0 ? (
+          <Card>
+            <CardBody>
+              <div className="text-center py-8">
+                <div className="text-4xl mb-2">✨</div>
+                <div className="text-lg font-semibold text-slate-700">No recommendations</div>
+                <div className="text-sm text-slate-500 mt-1">All tables are healthy!</div>
+              </div>
+            </CardBody>
+          </Card>
+        ) : (
+          <div className="space-y-3">
+            {visibleRecommendations.map((rec, index) => (
+              <Card key={`${rec.relation}-${rec.kind}-${index}`}>
+                <CardBody>
+                  <div className="space-y-3">
+                    {/* Header */}
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex items-center gap-2">
+                        <Badge tone={getSeverityColor(rec.severity)}>{rec.severity}</Badge>
+                        <Badge tone="slate">{getRecKindLabel(rec.kind)}</Badge>
+                        <span className="font-mono text-sm text-slate-700">{rec.relation}</span>
+                      </div>
+                      <button
+                        onClick={() => handleDismiss(rec)}
+                        className="flex-shrink-0 p-1 hover:bg-slate-100 rounded transition-colors group"
+                        title="Dismiss (will reappear on next refresh if still valid)"
+                      >
+                        <X className="h-4 w-4 text-slate-400 group-hover:text-slate-600" />
+                      </button>
+                    </div>
+
+                    {/* Rationale */}
+                    <div className="text-sm text-slate-600 leading-relaxed">
+                      {rec.rationale}
+                    </div>
+
+                    {/* Impact details */}
+                    <div className="flex items-center gap-4 text-xs text-slate-500">
+                      {rec.impact.estimated_duration_seconds && (
+                        <span>~{rec.impact.estimated_duration_seconds}s duration</span>
+                      )}
+                      {rec.impact.locks_table && (
+                        <span className="text-amber-600 font-semibold">⚠️ Locks table</span>
+                      )}
+                      {rec.impact.reclaim_bytes && (
+                        <span>Reclaim: {formatBytes(rec.impact.reclaim_bytes)}</span>
+                      )}
+                    </div>
+
+                    {/* SQL Command */}
+                    <div className="relative">
+                      <pre className="bg-slate-800 text-slate-100 p-3 rounded text-sm font-mono overflow-x-auto">
+                        {rec.sql_command}
+                      </pre>
+                      <button
+                        onClick={() => handleCopy(rec.sql_command, index)}
+                        className="absolute top-2 right-2 px-2 py-1 text-xs bg-slate-700 hover:bg-slate-600 text-slate-100 rounded transition-colors"
+                      >
+                        {copiedIndex === index ? "Copied!" : "Copy SQL"}
+                      </button>
                     </div>
                   </div>
+                </CardBody>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
 
-                  {/* Message */}
-                  <div className="text-sm text-slate-600 leading-relaxed">
-                    {forecast.message}
-                  </div>
+      {/* Forecasting Section */}
+      <div className="space-y-4">
+        <Section
+          title="Capacity Forecasts"
+          subtitle={forecasts.length === 0 ? "All trending healthy!" : `${forecasts.length} capacity warnings`}
+          icon={<TrendingUp className="h-5 w-5 text-blue-500" />}
+        />
 
-                  {/* Forecast details */}
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
-                    <div>
-                      <div className="text-slate-500">Current</div>
-                      <div className="font-semibold text-slate-900">{forecast.current_value.toFixed(0)}</div>
+        {forecasts.length === 0 ? (
+          <Card>
+            <CardBody>
+              <div className="text-center py-8">
+                <div className="text-4xl mb-2">✨</div>
+                <div className="text-lg font-semibold text-slate-700">No capacity issues forecast</div>
+                <div className="text-sm text-slate-500 mt-1">All resources are trending healthy!</div>
+              </div>
+            </CardBody>
+          </Card>
+        ) : (
+          <div className="space-y-3">
+            {forecasts.map((forecast, index) => (
+              <Card key={`${forecast.resource}-${forecast.kind}-${index}`}>
+                <CardBody>
+                  <div className="space-y-3">
+                    {/* Header */}
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="flex items-center gap-2">
+                        <Badge tone={getSeverityColor(forecast.severity)}>{forecast.severity.toUpperCase()}</Badge>
+                        <Badge tone="slate">{getForecastKindLabel(forecast.kind)}</Badge>
+                        <span className="font-mono text-sm text-slate-700">{forecast.resource}</span>
+                      </div>
                     </div>
-                    <div>
-                      <div className="text-slate-500">Threshold</div>
-                      <div className="font-semibold text-slate-900">{forecast.threshold.toFixed(0)}</div>
+
+                    {/* Message */}
+                    <div className="text-sm text-slate-600 leading-relaxed">
+                      {forecast.message}
                     </div>
-                    {forecast.growth_rate_per_day > 0 && (
+
+                    {/* Forecast details */}
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs">
                       <div>
-                        <div className="text-slate-500">Growth/Day</div>
-                        <div className="font-semibold text-amber-600">+{forecast.growth_rate_per_day.toFixed(1)}</div>
+                        <div className="text-slate-500">Current</div>
+                        <div className="font-semibold text-slate-900">{forecast.current_value.toFixed(0)}</div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500">Threshold</div>
+                        <div className="font-semibold text-slate-900">{forecast.threshold.toFixed(0)}</div>
+                      </div>
+                      {forecast.growth_rate_per_day > 0 && (
+                        <div>
+                          <div className="text-slate-500">Growth/Day</div>
+                          <div className="font-semibold text-amber-600">+{forecast.growth_rate_per_day.toFixed(1)}</div>
+                        </div>
+                      )}
+                      {forecast.days_until_threshold !== null && forecast.days_until_threshold !== undefined && (
+                        <div>
+                          <div className="text-slate-500">Days Until</div>
+                          <div className="font-semibold text-red-600">{forecast.days_until_threshold.toFixed(0)} days</div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Predicted date */}
+                    {forecast.predicted_date && (
+                      <div className="bg-amber-50 border border-amber-200 rounded p-3 text-sm">
+                        <span className="font-semibold text-amber-900">Predicted breach: </span>
+                        <span className="text-amber-700">{formatDate(forecast.predicted_date)}</span>
                       </div>
                     )}
-                    {forecast.days_until_threshold !== null && forecast.days_until_threshold !== undefined && (
-                      <div>
-                        <div className="text-slate-500">Days Until</div>
-                        <div className="font-semibold text-red-600">{forecast.days_until_threshold.toFixed(0)} days</div>
-                      </div>
-                    )}
                   </div>
-
-                  {/* Predicted date */}
-                  {forecast.predicted_date && (
-                    <div className="bg-amber-50 border border-amber-200 rounded p-3 text-sm">
-                      <span className="font-semibold text-amber-900">Predicted breach: </span>
-                      <span className="text-amber-700">{formatDate(forecast.predicted_date)}</span>
-                    </div>
-                  )}
-                </div>
-              </CardBody>
-            </Card>
-          ))}
-        </div>
-      )}
+                </CardBody>
+              </Card>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -1738,32 +1639,13 @@ function App() {
         <main className="space-y-6">
           {active === 'overview' && <OverviewTab overview={overview ?? EMPTY_OVERVIEW} />}
           {active === 'workload' && <WorkloadTab queries={topQueries} />}
-          {active === 'autovac' && <AutovacTab tables={autovacuum} />}
-          {active === 'storage' && <StorageTab rows={storage} />}
-          {active === 'bloat' && <BloatTab samples={bloatSamples} />}
-          {active === 'recommendations' && <RecommendationsTab recommendations={recommendationsData.recommendations} />}
-          {active === 'forecasts' && <ForecastsTab forecasts={forecastsData.forecasts} />}
+          {active === 'storage' && <StorageAndBloatTab storage={storage} bloatSamples={bloatSamples} unusedIndexes={unusedIndexes} staleStats={staleStats} />}
+          {active === 'recommendations' && <RecommendationsTab recommendations={recommendationsData.recommendations} forecasts={forecastsData.forecasts} />}
           {active === 'history' && <HistoryCharts />}
-          {active === 'stale-stats' && <StaleStatsTab rows={staleStats} />}
           {active === 'replication' && <ReplicationTab replicas={replication} />}
           {active === 'partitions' && <PartitionsTab slices={partitions} />}
           {active === 'alerts' && <AlertsTab overview={overview} />}
           {active === 'wraparound' && <WraparoundTab snapshot={wraparound} />}
-          {active === 'indexes' && (
-            <div className="space-y-4">
-              <Section title="Unused Indexes" icon={<Layers className="h-5 w-5 text-slate-500" />} />
-              <Card><CardBody>
-                {unusedIndexes.length === 0 ? <div className="text-sm text-slate-500">No unused indexes detected.</div> : (
-                  <table className="min-w-full text-sm"><thead><tr className="text-left text-slate-500 border-b border-slate-100"><th className="py-2 pr-4">Relation</th><th className="py-2 pr-4">Index</th><th className="py-2 pr-4">Bytes</th></tr></thead><tbody>{unusedIndexes.map(ix => (
-                    <tr key={ix.relation+ix.index} className="border-b border-slate-50 hover:bg-slate-50/60"><td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{ix.relation}</td><td className="py-2 pr-4 font-mono text-[12px] text-slate-700">{ix.index}</td><td className="py-2 pr-4">{formatBytes(ix.bytes)}</td></tr>
-                  ))}</tbody></table>
-                )}
-              </CardBody></Card>
-              <SqlSnippet sql={SQL_SNIPPETS.unusedIndexes} />
-            </div>
-          )}
-          {/* legacy alias fallback */}
-          {active === 'stale' && <StaleStatsTab rows={staleStats} />}
         </main>
       </div>
     </div>
